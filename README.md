@@ -115,6 +115,52 @@ IAsyncEnumerable<JsonNode?> ExtractAllJsonMatchesAsync(this string json, string?
 
 Passing `null` or `"$"` as `selectToken` returns the entire document.
 
+### Path validation
+
+Use `JsonPathValidator` to check a path expression before executing it:
+
+```csharp
+// Quick boolean check
+bool ok = JsonPathValidator.IsValid("$.items[?(@.price < 10)]");
+
+// Full result with error message
+JsonPathValidationResult result = JsonPathValidator.Validate("$.items[?()]");
+if (!result.IsValid)
+    Console.WriteLine(result.Error);
+// → "Empty filter expression at position 7."
+```
+
+`Validate` detects the following structural errors:
+
+| Problem | Example | Error |
+|---|---|---|
+| Unclosed `[` | `$.obj[p2,p1` | `Unclosed '[' at position 5.` |
+| Empty filter body | `$.items[?()]` | `Empty filter expression at position 7.` |
+| Filter missing `)` | `$.items[?(@.isbn]` | `Malformed filter expression at position 7: missing closing ')'.` |
+| Empty computed index | `$.items[()]` | `Empty computed index expression at position 7.` |
+| Computed index missing `)` | `$.items[(@.length-1]` | `Malformed computed index expression at position 7: missing closing ')'.` |
+
+`null` and empty strings are considered valid (they select the root document). Bracket characters inside quoted string literals in filter expressions are handled correctly and do not produce false positives.
+
+## Malformed path behavior
+
+The parser is lenient and never throws on invalid or incomplete path expressions. The table below documents the defined behavior for common malformed inputs.
+
+| Malformed path | What happens | Result |
+|---|---|---|
+| `$.obj[p2,p1` | Unclosed `[` discards the bracket segment; preceding segments still match | Partial match up to the last valid segment |
+| `$[name` | Unclosed `[` at root; no segments parsed | Entire document |
+| `$.name.` | Trailing dot consumed silently | Same as `$.name` |
+| `$..` | Double dot with empty property name; recursive segment skipped | Entire document |
+| `""` | Empty string treated the same as `$` | Entire document |
+| `$.items[?()]` | Filter body too short (3 chars minimum required); bracket segment discarded | The `items` node itself |
+| `$.items[badkey]` | Bracket content is not a valid index, range, wildcard, filter, or union; discarded | The `items` node itself |
+| `$.items[?@.isbn]` | Filter missing opening `(`; discarded | The `items` node itself |
+| `$$` | Second `$` parsed as a literal property name; no such property | `null` |
+| `$.   ` | Three-space string treated as a property name; no match | `null` |
+
+**Guarantee:** no malformed path will cause an infinite loop or an unhandled exception. At worst, the path is parsed partially and matched against whatever valid segments were extracted before the error.
+
 ## Implementation roadmap
 
 The section below details the remaining planned work. All earlier phases (negative/union indexing, filter expressions, computed index expressions) are implemented.

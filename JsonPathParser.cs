@@ -63,7 +63,10 @@ internal static class JsonPathParser
   {
     var close = path.IndexOf(']');
     if (close <= 0)
+    {
+      path = ReadOnlySpan<char>.Empty;
       return;
+    }
 
     var inner = path[1..close];
     path = path[(close + 1)..];
@@ -95,7 +98,10 @@ internal static class JsonPathParser
   {
     var close = path.IndexOf(']');
     if (close < 0)
+    {
+      path = ReadOnlySpan<char>.Empty;
       return;
+    }
 
     var inner = path[1..close];
     path = path[(close + 1)..];

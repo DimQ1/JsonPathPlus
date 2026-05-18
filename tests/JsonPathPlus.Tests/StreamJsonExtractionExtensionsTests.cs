@@ -469,6 +469,139 @@ public sealed class StreamJsonExtractionExtensionsTests
     AssertNodeEquals(JsonValue.Create(4), result);
   }
 
+  // ── Malformed / edge-case path tests ──────────────────────────────────────
+
+  [Fact]
+  public async Task ExtractFirstJsonMatchAsync_UnclosedBracketMidPath_DoesNotThrowReturnsPartialMatch()
+  {
+    // Parser discards the unclosed [p2,p1 segment; segments = [Property("obj")]
+    using var stream = CreateStream(SampleJson);
+
+    var result = await stream.ExtractFirstJsonMatchAsync("$.obj[p2,p1");
+
+    Assert.IsType<System.Text.Json.Nodes.JsonObject>(result);
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_UnclosedBracketMidPath_DoesNotThrowReturnsPartialMatches()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.obj[p2,p1"));
+
+    Assert.Single(results);
+    Assert.IsType<System.Text.Json.Nodes.JsonObject>(results[0]);
+  }
+
+  [Fact]
+  public async Task ExtractFirstJsonMatchAsync_UnclosedBracketAtRoot_DoesNotThrowReturnsRoot()
+  {
+    // $[name has no closing ]; bracket segment is discarded, segments = [] → root
+    using var stream = CreateStream(SampleJson);
+
+    var result = await stream.ExtractFirstJsonMatchAsync("$[name");
+
+    AssertNodeEquals(JsonNode.Parse(SampleJson), result);
+  }
+
+  [Fact]
+  public async Task ExtractFirstJsonMatchAsync_TrailingDot_DoesNotThrowReturnsProperty()
+  {
+    // $.name. — trailing dot is consumed harmlessly; segments = [Property("name")]
+    using var stream = CreateStream(SampleJson);
+
+    var result = await stream.ExtractFirstJsonMatchAsync("$.name.");
+
+    AssertNodeEquals(JsonValue.Create("rootName"), result);
+  }
+
+  [Fact]
+  public async Task ExtractFirstJsonMatchAsync_OnlyDoubleDot_DoesNotThrowReturnsRoot()
+  {
+    // $.. — recursive segment with empty name is skipped; segments = [] → root
+    using var stream = CreateStream(SampleJson);
+
+    var result = await stream.ExtractFirstJsonMatchAsync("$..");
+
+    AssertNodeEquals(JsonNode.Parse(SampleJson), result);
+  }
+
+  [Fact]
+  public async Task ExtractFirstJsonMatchAsync_EmptyStringPath_DoesNotThrowReturnsRoot()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    var result = await stream.ExtractFirstJsonMatchAsync("");
+
+    AssertNodeEquals(JsonNode.Parse(SampleJson), result);
+  }
+
+  [Fact]
+  public async Task ExtractFirstJsonMatchAsync_EmptyFilterExpression_DoesNotThrowReturnsArray()
+  {
+    // $.items[?()] — filter body is too short; bracket segment discarded; segments = [Property("items")]
+    using var stream = CreateStream(SampleJson);
+
+    var result = await stream.ExtractFirstJsonMatchAsync("$.items[?()]");
+
+    Assert.IsType<System.Text.Json.Nodes.JsonArray>(result);
+  }
+
+  [Fact]
+  public async Task ExtractFirstJsonMatchAsync_InvalidBracketContent_DoesNotThrowReturnsArray()
+  {
+    // $.items[notanindex] — not wildcard/filter/computed/union/range/int; segment discarded
+    using var stream = CreateStream(SampleJson);
+
+    var result = await stream.ExtractFirstJsonMatchAsync("$.items[notanindex]");
+
+    Assert.IsType<System.Text.Json.Nodes.JsonArray>(result);
+  }
+
+  [Fact]
+  public async Task ExtractFirstJsonMatchAsync_FilterWithoutOpenParenthesis_DoesNotThrowReturnsArray()
+  {
+    // $.items[?@.isbn] — doesn't match ?( ... ) pattern; segment discarded
+    using var stream = CreateStream(SampleJson);
+
+    var result = await stream.ExtractFirstJsonMatchAsync("$.items[?@.isbn]");
+
+    Assert.IsType<System.Text.Json.Nodes.JsonArray>(result);
+  }
+
+  [Fact]
+  public async Task ExtractFirstJsonMatchAsync_DoubleDollarSign_DoesNotThrowReturnsNull()
+  {
+    // $$ — second $ is treated as property name "$"; no such property → null
+    using var stream = CreateStream(SampleJson);
+
+    var result = await stream.ExtractFirstJsonMatchAsync("$$");
+
+    Assert.Null(result);
+  }
+
+  [Fact]
+  public async Task ExtractFirstJsonMatchAsync_WhitespaceOnlyPropertyName_DoesNotThrowReturnsNull()
+  {
+    // "$.   " — property name is three spaces; no match → null
+    using var stream = CreateStream(SampleJson);
+
+    var result = await stream.ExtractFirstJsonMatchAsync("$.   ");
+
+    Assert.Null(result);
+  }
+
+  [Fact]
+  public async Task ExtractFirstJsonMatchAsync_UnclosedBracketOnRecursiveDescent_DoesNotThrow()
+  {
+    // $..[id — recursive bracket has no closing ]; segment discarded → root
+    using var stream = CreateStream(SampleJson);
+
+    var result = await stream.ExtractFirstJsonMatchAsync("$..[id");
+
+    AssertNodeEquals(JsonNode.Parse(SampleJson), result);
+  }
+
   private static MemoryStream CreateStream(string json)
     => new(Encoding.UTF8.GetBytes(json));
 

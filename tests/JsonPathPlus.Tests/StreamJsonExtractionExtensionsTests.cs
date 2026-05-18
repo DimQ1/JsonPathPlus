@@ -45,6 +45,18 @@ public sealed class StreamJsonExtractionExtensionsTests
   ]
   """;
 
+  private const string RootObjectJson = """
+  {
+    "items": [
+      { "id": 1, "name": "one" },
+      { "id": 2, "name": "two" },
+      { "id": 3, "name": "three" }
+    ],
+    "meta": { "total": 3 },
+    "other": { "enabled": true }
+  }
+  """;
+
   [Fact]
   public async Task ExtractFirstJsonMatchAsync_WithNullPath_ReturnsRoot()
   {
@@ -775,6 +787,66 @@ public sealed class StreamJsonExtractionExtensionsTests
     var result = await stream.ExtractFirstJsonMatchAsync("$[-1].id");
 
     AssertNodeEquals(JsonValue.Create(4), result);
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithRootObjectProperty_UsesStreamingAndReturnsMatches()
+  {
+    using var stream = CreateStream(RootObjectJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.items[*].id"));
+
+    Assert.Equal(3, results.Count);
+    AssertNodeEquals(JsonValue.Create(1), results[0]);
+    AssertNodeEquals(JsonValue.Create(2), results[1]);
+    AssertNodeEquals(JsonValue.Create(3), results[2]);
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesWithPathsAsync_WithRootObjectProperty_UsesStreamingAndReturnsPaths()
+  {
+    using var stream = CreateStream(RootObjectJson);
+
+    var results = await CollectPathMatchesAsync(stream.ExtractAllJsonMatchesWithPathsAsync("$.items[*].id"));
+
+    Assert.Equal(3, results.Count);
+    Assert.Equal("$.items[0].id", results[0].Path);
+    Assert.Equal("$.items[1].id", results[1].Path);
+    Assert.Equal("$.items[2].id", results[2].Path);
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithMemoryCap_ThrowsWhenFullParseWouldExceedCap()
+  {
+    using var stream = CreateStream(SampleJson);
+    var options = new JsonPathExtractionOptions { FullParseMaxBytes = 8 };
+
+    var ex = await Assert.ThrowsAsync<InvalidOperationException>(
+      async () => await CollectAsync(stream.ExtractAllJsonMatchesAsync("$..propertyName", options)));
+
+    Assert.Contains("FullParseMaxBytes", ex.Message);
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithMemoryCap_AllowsRootArrayStreaming()
+  {
+    using var stream = CreateStream(RootArrayJson);
+    var options = new JsonPathExtractionOptions { FullParseMaxBytes = 8 };
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$[*].id", options));
+
+    Assert.Equal(4, results.Count);
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithMemoryCap_AllowsRootObjectStreaming()
+  {
+    using var stream = CreateStream(RootObjectJson);
+    var options = new JsonPathExtractionOptions { FullParseMaxBytes = 8 };
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.items[*].id", options));
+
+    Assert.Equal(3, results.Count);
   }
 
   // ── Malformed / edge-case path tests ──────────────────────────────────────

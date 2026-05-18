@@ -2,7 +2,8 @@
 
 Lightweight JSONPath-like `Stream` extensions for `System.Text.Json`.
 
-Extracts JSON subtrees from a `Stream` by path expression without loading the full document into memory. Internally uses `JsonNode.ParseAsync` for evaluation; a true token-streaming mode (no full parse) is on the roadmap.
+Extracts JSON subtrees from a `Stream` by path expression.
+Uses streaming selectors for root arrays and root objects, with automatic full-parse fallback when a selector requires full-document evaluation.
 
 ## Installation
 
@@ -116,6 +117,10 @@ git push -u origin release_1.0.0
 Task<JsonNode?> ExtractFirstJsonMatchAsync(this Stream stream, string? selectToken)
 IAsyncEnumerable<JsonNode?> ExtractAllJsonMatchesAsync(this Stream stream, string? selectToken)
 
+// Stream input with extraction options
+Task<JsonNode?> ExtractFirstJsonMatchAsync(this Stream stream, string? selectToken, JsonPathExtractionOptions options)
+IAsyncEnumerable<JsonNode?> ExtractAllJsonMatchesAsync(this Stream stream, string? selectToken, JsonPathExtractionOptions options)
+
 // JsonNode input
 Task<JsonNode?> ExtractFirstJsonMatchAsync(this JsonNode? node, string? selectToken)
 IAsyncEnumerable<JsonNode?> ExtractAllJsonMatchesAsync(this JsonNode? node, string? selectToken)
@@ -126,6 +131,8 @@ IAsyncEnumerable<JsonNode?> ExtractAllJsonMatchesAsync(this string json, string?
 ```
 
 Passing `null` or `"$"` as `selectToken` returns the entire document.
+
+`JsonPathExtractionOptions.FullParseMaxBytes` lets you cap fallback full-document parsing by stream size. Streaming selectors are still allowed under this cap.
 
 ### Path validation
 
@@ -214,40 +221,7 @@ The parser is lenient and never throws on invalid or incomplete path expressions
 
 ## Implementation roadmap
 
-The section below details the remaining planned work. All earlier phases (negative/union indexing, filter expressions, computed index expressions) are implemented.
-
-### Phase 0.5 - API parity for input types (implemented)
-
-> **Goal:** Provide the same extraction ergonomics for `JsonNode` and raw JSON `string` inputs as existing `Stream` extensions.
-
-| API | Notes |
-|---|---|
-| `Task<JsonNode?> ExtractFirstJsonMatchAsync(this JsonNode? node, string? selectToken)` | In-memory input; avoids stream setup when caller already has a parsed node |
-| `IAsyncEnumerable<JsonNode?> ExtractAllJsonMatchesAsync(this JsonNode? node, string? selectToken)` | Multi-match enumeration over existing node graphs |
-| `Task<JsonNode?> ExtractFirstJsonMatchAsync(this string json, string? selectToken)` | Convenience overload that parses JSON text and reuses matcher pipeline |
-| `IAsyncEnumerable<JsonNode?> ExtractAllJsonMatchesAsync(this string json, string? selectToken)` | Convenience overload for list extraction from raw JSON strings |
-
-**Design notes:**
-1. Keep matcher behavior identical across `Stream`, `JsonNode`, and `string` overloads.
-2. Centralize parsed-segment and match execution to avoid duplicated extraction logic.
-3. Add API-level tests that assert parity of outputs across all three input types.
-
-### Phase 1 — Streaming strategy (partially implemented)
-
-> **Goal:** Traverse large streams with a streaming strategy where possible.
-
-| Feature | Status | Notes |
-|---|---|
-| Root-array streaming matcher | ✅ Implemented | Uses streaming enumeration for root-array paths such as `$[*]`, `$[1:3]`, `$[0,2]`, and root-array filters |
-| Streaming multi-match | ✅ Implemented (root-array scope) | Yields matches as they are found for supported root-array selectors |
-| Token-by-token object-root navigation | ⏳ Planned | Object-root streaming traversal is still planned |
-| Memory cap option | ⏳ Planned | Configurable memory threshold is still planned |
-
-**Implementation sketch:**
-1. Add a dedicated streaming matcher (for example `JsonPathStreamingMatcher`) that evaluates parsed `JsonPathSegment` lists against `Utf8JsonReader`.
-2. Keep `JsonPathMatcher` as the in-memory strategy and select between strategies in `StreamJsonExtractionExtensions`.
-3. Add compatibility tests to ensure streaming and in-memory strategies return the same results for identical paths.
-4. Add benchmark comparing streaming vs full-parse for various document sizes.
+All planned roadmap phases in this README are implemented.
 
 ---
 

@@ -36,6 +36,15 @@ public sealed class StreamJsonExtractionExtensionsTests
   }
   """;
 
+  private const string RootArrayJson = """
+  [
+    { "id": 1, "name": "one" },
+    { "id": 2, "name": "two" },
+    { "id": 3, "name": "three" },
+    { "id": 4, "name": "four" }
+  ]
+  """;
+
   [Fact]
   public async Task ExtractFirstJsonMatchAsync_WithNullPath_ReturnsRoot()
   {
@@ -350,6 +359,114 @@ public sealed class StreamJsonExtractionExtensionsTests
     var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.does.not.exist"));
 
     Assert.Empty(results);
+  }
+
+  [Fact]
+  public async Task ExtractFirstJsonMatchAsync_OnJsonNode_MatchesStreamBehavior()
+  {
+    using var stream = CreateStream(SampleJson);
+    var node = JsonNode.Parse(SampleJson);
+
+    var expected = await stream.ExtractFirstJsonMatchAsync("$.a.b.c");
+    var actual = await node!.ExtractFirstJsonMatchAsync("$.a.b.c");
+
+    AssertNodeEquals(expected, actual);
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_OnJsonNode_MatchesStreamBehavior()
+  {
+    using var stream = CreateStream(SampleJson);
+    var node = JsonNode.Parse(SampleJson);
+
+    var expected = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.items[1:3].id"));
+    var actual = await CollectAsync(node!.ExtractAllJsonMatchesAsync("$.items[1:3].id"));
+
+    Assert.Equal(expected.Count, actual.Count);
+    for (var i = 0; i < expected.Count; i++)
+      AssertNodeEquals(expected[i], actual[i]);
+  }
+
+  [Fact]
+  public async Task ExtractFirstJsonMatchAsync_OnString_MatchesStreamBehavior()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    var expected = await stream.ExtractFirstJsonMatchAsync("$.books[?(@.price < 10)].title");
+    var actual = await SampleJson.ExtractFirstJsonMatchAsync("$.books[?(@.price < 10)].title");
+
+    AssertNodeEquals(expected, actual);
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_OnString_MatchesStreamBehavior()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    var expected = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.obj[p2,p1]"));
+    var actual = await CollectAsync(SampleJson.ExtractAllJsonMatchesAsync("$.obj[p2,p1]"));
+
+    Assert.Equal(expected.Count, actual.Count);
+    for (var i = 0; i < expected.Count; i++)
+      AssertNodeEquals(expected[i], actual[i]);
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithRootArrayWildcard_UsesStreamingAndReturnsAll()
+  {
+    using var stream = CreateStream(RootArrayJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$[*].id"));
+
+    Assert.Equal(4, results.Count);
+    AssertNodeEquals(JsonValue.Create(1), results[0]);
+    AssertNodeEquals(JsonValue.Create(2), results[1]);
+    AssertNodeEquals(JsonValue.Create(3), results[2]);
+    AssertNodeEquals(JsonValue.Create(4), results[3]);
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithRootArrayRange_UsesStreamingAndReturnsRange()
+  {
+    using var stream = CreateStream(RootArrayJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$[1:3].id"));
+
+    Assert.Equal(2, results.Count);
+    AssertNodeEquals(JsonValue.Create(2), results[0]);
+    AssertNodeEquals(JsonValue.Create(3), results[1]);
+  }
+
+  [Fact]
+  public async Task ExtractFirstJsonMatchAsync_WithRootArrayIndex_UsesStreamingAndReturnsFirstMatch()
+  {
+    using var stream = CreateStream(RootArrayJson);
+
+    var result = await stream.ExtractFirstJsonMatchAsync("$[2].id");
+
+    AssertNodeEquals(JsonValue.Create(3), result);
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithRootArrayFilter_UsesStreamingAndReturnsMatches()
+  {
+    using var stream = CreateStream(RootArrayJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$[?(@.id >= 3)].name"));
+
+    Assert.Equal(2, results.Count);
+    AssertNodeEquals(JsonValue.Create("three"), results[0]);
+    AssertNodeEquals(JsonValue.Create("four"), results[1]);
+  }
+
+  [Fact]
+  public async Task ExtractFirstJsonMatchAsync_WithRootArrayNegativeIndex_FallsBackAndReturnsExpected()
+  {
+    using var stream = CreateStream(RootArrayJson);
+
+    var result = await stream.ExtractFirstJsonMatchAsync("$[-1].id");
+
+    AssertNodeEquals(JsonValue.Create(4), result);
   }
 
   private static MemoryStream CreateStream(string json)

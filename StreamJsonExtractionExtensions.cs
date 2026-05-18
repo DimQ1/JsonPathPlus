@@ -65,6 +65,31 @@ public static class StreamJsonExtractionExtensions
   }
 
   /// <summary>
+  /// Extracts all JSON subtrees matching <paramref name="selectToken"/> with absolute JSONPath locations.
+  /// </summary>
+  /// <param name="stream">The JSON stream to read from.</param>
+  /// <param name="selectToken">JSONPath with wildcards or ranges.</param>
+  /// <returns>Async enumerable of matching values and paths.</returns>
+  public static async IAsyncEnumerable<JsonPathMatch> ExtractAllJsonMatchesWithPathsAsync(
+    this Stream stream, string? selectToken)
+  {
+    ArgumentNullException.ThrowIfNull(stream);
+
+    var segments = JsonPathExtractionCore.ParseSegments(selectToken);
+
+    if (JsonPathStreamingMatcher.CanUseStreaming(stream, segments))
+    {
+      await foreach (var match in JsonPathStreamingMatcher.ExtractAllMatchesWithPathsAsync(stream, segments))
+        yield return match;
+      yield break;
+    }
+
+    var root = await JsonNode.ParseAsync(stream);
+    foreach (var match in JsonPathExtractionCore.FindAllMatchesWithPaths(root, segments))
+      yield return match;
+  }
+
+  /// <summary>
   /// Returns the first JSON match for <paramref name="node"/> at <paramref name="selectToken"/>.
   /// </summary>
   public static Task<JsonNode?> ExtractFirstJsonMatchAsync(this JsonNode? node, string? selectToken)
@@ -81,6 +106,19 @@ public static class StreamJsonExtractionExtensions
   {
     var segments = JsonPathExtractionCore.ParseSegments(selectToken);
     foreach (var match in JsonPathExtractionCore.FindAllMatches(node, segments))
+      yield return match;
+
+    await Task.CompletedTask;
+  }
+
+  /// <summary>
+  /// Returns all JSON matches for <paramref name="node"/> at <paramref name="selectToken"/> with absolute JSONPath locations.
+  /// </summary>
+  public static async IAsyncEnumerable<JsonPathMatch> ExtractAllJsonMatchesWithPathsAsync(
+    this JsonNode? node, string? selectToken)
+  {
+    var segments = JsonPathExtractionCore.ParseSegments(selectToken);
+    foreach (var match in JsonPathExtractionCore.FindAllMatchesWithPaths(node, segments))
       yield return match;
 
     await Task.CompletedTask;
@@ -109,6 +147,22 @@ public static class StreamJsonExtractionExtensions
     var root = JsonNode.Parse(json);
     var segments = JsonPathExtractionCore.ParseSegments(selectToken);
     foreach (var match in JsonPathExtractionCore.FindAllMatches(root, segments))
+      yield return match;
+
+    await Task.CompletedTask;
+  }
+
+  /// <summary>
+  /// Parses <paramref name="json"/> and returns all JSON matches at <paramref name="selectToken"/> with absolute JSONPath locations.
+  /// </summary>
+  public static async IAsyncEnumerable<JsonPathMatch> ExtractAllJsonMatchesWithPathsAsync(
+    this string json, string? selectToken)
+  {
+    ArgumentNullException.ThrowIfNull(json);
+
+    var root = JsonNode.Parse(json);
+    var segments = JsonPathExtractionCore.ParseSegments(selectToken);
+    foreach (var match in JsonPathExtractionCore.FindAllMatchesWithPaths(root, segments))
       yield return match;
 
     await Task.CompletedTask;

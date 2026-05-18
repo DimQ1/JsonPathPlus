@@ -30,4 +30,19 @@ internal static class JsonPathExtractionCore
     foreach (var match in JsonPathMatcher.FindMatches(root, segments))
       yield return match;
   }
+
+  public static IEnumerable<JsonPathMatch> FindAllMatchesWithPaths(
+    JsonNode? root,
+    List<JsonPathSegment> segments,
+    string rootPath = "$")
+  {
+    if (segments.Count == 0)
+    {
+      yield return new JsonPathMatch(rootPath, root);
+      yield break;
+    }
+
+    foreach (var match in JsonPathMatcher.FindMatchesWithPaths(root, segments, rootPath))
+      yield return match;
+  }
 }

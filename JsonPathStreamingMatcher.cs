@@ -89,6 +89,33 @@ internal static class JsonPathStreamingMatcher
     }
   }
 
+  public static async IAsyncEnumerable<JsonPathMatch> ExtractAllMatchesWithPathsAsync(Stream stream, List<JsonPathSegment> segments)
+  {
+    var origin = stream.Position;
+    try
+    {
+      var firstSegment = segments[0];
+      var remainingSegments = segments.Skip(1).ToList();
+      var index = 0;
+
+      await foreach (var item in JsonSerializer.DeserializeAsyncEnumerable<JsonNode>(stream))
+      {
+        if (IsFirstSegmentMatch(firstSegment, index, item))
+        {
+          var itemRootPath = $"$[{index}]";
+          foreach (var match in JsonPathExtractionCore.FindAllMatchesWithPaths(item, remainingSegments, itemRootPath))
+            yield return match;
+        }
+
+        index++;
+      }
+    }
+    finally
+    {
+      stream.Position = origin;
+    }
+  }
+
   private static bool IsFirstSegmentMatch(JsonPathSegment first, int index, JsonNode? item)
   {
     return first.SegmentType switch

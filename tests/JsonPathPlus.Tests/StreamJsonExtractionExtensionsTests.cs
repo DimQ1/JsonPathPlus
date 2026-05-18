@@ -108,6 +108,20 @@ public sealed class StreamJsonExtractionExtensionsTests
   }
 
   [Fact]
+  public async Task ExtractAllJsonMatchesWithPathsAsync_WithArrayRangePath_ReturnsValuesAndPaths()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    var results = await CollectPathMatchesAsync(stream.ExtractAllJsonMatchesWithPathsAsync("$.items[1:3].id"));
+
+    Assert.Equal(2, results.Count);
+    Assert.Equal("$.items[1].id", results[0].Path);
+    Assert.Equal("$.items[2].id", results[1].Path);
+    AssertNodeEquals(JsonValue.Create(2), results[0].Value);
+    AssertNodeEquals(JsonValue.Create(3), results[1].Value);
+  }
+
+  [Fact]
   public async Task ExtractAllJsonMatchesAsync_WithOpenStartRange_ReturnsFromBeginning()
   {
     using var stream = CreateStream(SampleJson);
@@ -706,6 +720,20 @@ public sealed class StreamJsonExtractionExtensionsTests
   }
 
   [Fact]
+  public async Task ExtractAllJsonMatchesWithPathsAsync_WithRootArrayWildcard_UsesStreamingAndReturnsPaths()
+  {
+    using var stream = CreateStream(RootArrayJson);
+
+    var results = await CollectPathMatchesAsync(stream.ExtractAllJsonMatchesWithPathsAsync("$[*].id"));
+
+    Assert.Equal(4, results.Count);
+    Assert.Equal("$[0].id", results[0].Path);
+    Assert.Equal("$[1].id", results[1].Path);
+    Assert.Equal("$[2].id", results[2].Path);
+    Assert.Equal("$[3].id", results[3].Path);
+  }
+
+  [Fact]
   public async Task ExtractAllJsonMatchesAsync_WithRootArrayRange_UsesStreamingAndReturnsRange()
   {
     using var stream = CreateStream(RootArrayJson);
@@ -1072,6 +1100,14 @@ public sealed class StreamJsonExtractionExtensionsTests
   private static async Task<List<JsonNode?>> CollectAsync(IAsyncEnumerable<JsonNode?> source)
   {
     var list = new List<JsonNode?>();
+    await foreach (var item in source)
+      list.Add(item);
+    return list;
+  }
+
+  private static async Task<List<JsonPathMatch>> CollectPathMatchesAsync(IAsyncEnumerable<JsonPathMatch> source)
+  {
+    var list = new List<JsonPathMatch>();
     await foreach (var item in source)
       list.Add(item);
     return list;

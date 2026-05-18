@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFrameworks>net8.0;net10.0</TargetFrameworks>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+
+    <!-- NuGet package metadata -->
+    <PackageId>JsonPathPlus</PackageId>
+    <Version>1.1.0</Version>
+    <Authors>JsonPathPlus</Authors>
+    <Description>Lightweight JSONPath-like stream extension for System.Text.Json. Supports property access, array indexing, wildcards, ranges, and recursive descent without loading the full document into memory.</Description>
+    <PackageTags>json jsonpath stream System.Text.Json dotnet</PackageTags>
+    <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <None Include="README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Compile Remove="tests\**\*.cs" />
+    <None Include="tests\**\*" Exclude="tests\**\bin\**;tests\**\obj\**" />
+  </ItemGroup>
+
+</Project>

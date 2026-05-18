@@ -31,13 +31,13 @@ jobs:
           echo "PACKAGE_VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Restore
-        run: dotnet restore JsonPathPlus.csproj
+        run: dotnet restore tests/JsonPathPlus.Tests/JsonPathPlus.Tests.csproj
 
       - name: Build
-        run: dotnet build JsonPathPlus.csproj --configuration Release --no-restore /p:Version=$PACKAGE_VERSION
+        run: dotnet build tests/JsonPathPlus.Tests/JsonPathPlus.Tests.csproj --configuration Release --no-restore /p:Version=$PACKAGE_VERSION
 
       - name: Test
-        run: dotnet test tests/JsonPathPlus.Tests/JsonPathPlus.Tests.csproj --configuration Release --no-restore --verbosity normal
+        run: dotnet test tests/JsonPathPlus.Tests/JsonPathPlus.Tests.csproj --configuration Release --no-build --no-restore --verbosity normal
 
       - name: Pack
         run: dotnet pack JsonPathPlus.csproj --configuration Release --no-build --output ./nupkg /p:PackageVersion=$PACKAGE_VERSION

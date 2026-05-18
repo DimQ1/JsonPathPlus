@@ -67,6 +67,10 @@ internal static class JsonPathMatcher
         case JsonPathSegmentType.RecursiveDescent:
           CollectRecursiveMatches(node, segment, results);
           break;
+
+        case JsonPathSegmentType.FieldProjection:
+          CollectFieldProjectionMatches(node, segment.ProjectionFields, results);
+          break;
       }
     }
 
@@ -219,4 +223,40 @@ internal static class JsonPathMatcher
         CollectRecursiveMatches(item, segment, results);
     }
   }
+
+  private static void CollectFieldProjectionMatches(JsonNode? node, string[]? fields, List<JsonNode?> results)
+  {
+    if (fields == null || fields.Length == 0)
+      return;
+
+    if (node is JsonArray array)
+    {
+      foreach (var item in array)
+      {
+        ProjectFields(item, fields, results);
+      }
+      return;
+    }
+
+    ProjectFields(node, fields, results);
+  }
+
+  private static void ProjectFields(JsonNode? node, string[] fields, List<JsonNode?> results)
+  {
+    if (node is not JsonObject obj)
+      return;
+
+    var projectedObject = new JsonObject();
+
+    foreach (var field in fields)
+    {
+      if (obj.TryGetPropertyValue(field, out var value))
+      {
+        projectedObject[field] = value?.DeepClone();
+      }
+    }
+
+    results.Add(projectedObject);
+  }
 }
+

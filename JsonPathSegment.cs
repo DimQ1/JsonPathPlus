@@ -10,7 +10,8 @@ internal readonly record struct JsonPathSegment(
   int[]? ArrayUnionIndices = null,
   string[]? PropertyUnionNames = null,
   string? FilterExpression = null,
-  string? ComputedIndexExpression = null);
+  string? ComputedIndexExpression = null,
+  string[]? ProjectionFields = null);
 
 internal enum JsonPathSegmentType
 {
@@ -22,5 +23,6 @@ internal enum JsonPathSegmentType
   Filter,
   ComputedIndex,
   Wildcard,
-  RecursiveDescent
+  RecursiveDescent,
+  FieldProjection
 }

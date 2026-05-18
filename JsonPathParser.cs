@@ -119,6 +119,8 @@ internal static class JsonPathParser
       else
         segments.Add(new JsonPathSegment(null, -1, -1, JsonPathSegmentType.PropertyUnion, null, propertyUnion));
     }
+    else if (TryParseFieldProjection(inner, out var projectionFields))
+      segments.Add(new JsonPathSegment(null, -1, -1, JsonPathSegmentType.FieldProjection, null, null, null, null, projectionFields));
     else if (TryParseArrayRange(inner, out var rangeStart, out var rangeEnd))
       segments.Add(new JsonPathSegment(null, rangeStart, rangeEnd, JsonPathSegmentType.ArrayRange));
     else if (int.TryParse(inner, out var idx))
@@ -155,11 +157,82 @@ internal static class JsonPathParser
       return true;
     }
 
-    propertyUnion = parts
-      .Select(static p => p.Trim('"', '\''))
-      .Where(static p => p.Length > 0)
-      .ToArray();
+    // Property union requires quoted strings
+    propertyUnion = new string[parts.Length];
+    for (int i = 0; i < parts.Length; i++)
+    {
+      var p = parts[i];
+      // Must start and end with quotes
+      if ((p.StartsWith('"') && p.EndsWith('"')) || (p.StartsWith('\'') && p.EndsWith('\'')))
+      {
+        propertyUnion[i] = p[1..^1]; // Remove quotes
+      }
+      else
+      {
+        // Not quoted - not a valid property union
+        return false;
+      }
+    }
+
     return propertyUnion.Length > 0;
+  }
+
+  private static bool TryParseFieldProjection(ReadOnlySpan<char> projectionStr, out string[]? fields)
+  {
+    fields = null;
+
+    if (projectionStr.IndexOf(',') < 0)
+      return false;
+
+    var parts = projectionStr.ToString().Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+    if (parts.Length == 0)
+      return false;
+
+    var fieldList = new List<string>(parts.Length);
+    
+    foreach (var part in parts)
+    {
+      // Skip if it's quoted (that's for property union)
+      if (part.StartsWith('"') || part.StartsWith('\''))
+        return false;
+      
+      // Skip if it's a number (that's for array union)
+      if (int.TryParse(part, out _))
+        return false;
+      
+      // Check if it's a valid identifier (alphanumeric + underscore, not starting with digit)
+      if (!IsValidIdentifier(part))
+        return false;
+      
+      fieldList.Add(part);
+    }
+
+    if (fieldList.Count > 0)
+    {
+      fields = fieldList.ToArray();
+      return true;
+    }
+
+    return false;
+  }
+
+  private static bool IsValidIdentifier(string name)
+  {
+    if (string.IsNullOrEmpty(name))
+      return false;
+
+    // First character must be letter or underscore
+    if (!char.IsLetter(name[0]) && name[0] != '_')
+      return false;
+
+    // Remaining characters must be letters, digits, or underscores
+    for (int i = 1; i < name.Length; i++)
+    {
+      if (!char.IsLetterOrDigit(name[i]) && name[i] != '_')
+        return false;
+    }
+
+    return true;
   }
 
   private static bool TryParseFilter(ReadOnlySpan<char> filterStr, out string? expression)

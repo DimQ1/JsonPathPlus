@@ -19,9 +19,9 @@ public sealed class StreamJsonExtractionExtensionsTests
     ],
     "obj": { "p1": "v1", "p2": "v2" },
     "books": [
-      { "title": "b1", "price": 5, "isbn": "x", "meta": { "published": 2001 } },
-      { "title": "b2", "price": 15, "meta": { "published": 1999 } },
-      { "title": "b3", "price": 8, "isbn": "y", "meta": { "published": 2010 } }
+      { "title": "b1", "author": "Author One", "price": 5, "isbn": "x", "meta": { "published": 2001 } },
+      { "title": "b2", "author": "Author Two", "price": 15, "meta": { "published": 1999 } },
+      { "title": "b3", "author": "Author Three", "price": 8, "isbn": "y", "meta": { "published": 2010 } }
     ],
     "nested": {
       "propertyName": "top",
@@ -252,7 +252,7 @@ public sealed class StreamJsonExtractionExtensionsTests
   {
     using var stream = CreateStream(SampleJson);
 
-    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.obj[p2,p1]"));
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.obj['p2','p1']"));
 
     Assert.Equal(2, results.Count);
     AssertNodeEquals(JsonValue.Create("v2"), results[0]);
@@ -316,6 +316,86 @@ public sealed class StreamJsonExtractionExtensionsTests
     Assert.Equal(2, results.Count);
     AssertNodeEquals(JsonValue.Create("b1"), results[0]);
     AssertNodeEquals(JsonValue.Create("b3"), results[1]);
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithFieldProjection_ReturnsProjectedObjects()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.books[title, price]"));
+
+    Assert.Equal(3, results.Count);
+    
+    var result1 = results[0] as JsonObject;
+    Assert.NotNull(result1);
+    Assert.Equal("b1", result1!["title"]?.GetValue<string>());
+    Assert.Equal(5, result1!["price"]?.GetValue<int>());
+    Assert.Null(result1!["isbn"]);
+    
+    var result3 = results[2] as JsonObject;
+    Assert.NotNull(result3);
+    Assert.Equal("b3", result3!["title"]?.GetValue<string>());
+    Assert.Equal(8, result3!["price"]?.GetValue<int>());
+    Assert.Null(result3!["isbn"]);
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithFilterAndFieldProjection_ReturnsFilteredAndProjectedObjects()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.books[?(@.price > 2)][title, author]"));
+
+    // All books have price > 2
+    Assert.Equal(3, results.Count);
+    
+    var result1 = results[0] as JsonObject;
+    Assert.NotNull(result1);
+    Assert.Equal("b1", result1!["title"]?.GetValue<string>());
+    Assert.Equal("Author One", result1!["author"]?.GetValue<string>());
+    Assert.Null(result1!["price"]); // price should not be in projection
+    
+    var result2 = results[1] as JsonObject;
+    Assert.NotNull(result2);
+    Assert.Equal("b2", result2!["title"]?.GetValue<string>());
+    Assert.Equal("Author Two", result2!["author"]?.GetValue<string>());
+    
+    var result3 = results[2] as JsonObject;
+    Assert.NotNull(result3);
+    Assert.Equal("b3", result3!["title"]?.GetValue<string>());
+    Assert.Equal("Author Three", result3!["author"]?.GetValue<string>());
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithFieldProjectionAndWildcard_ReturnsProjectedObjects()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.items[id, value]"));
+
+    Assert.Equal(4, results.Count);
+    
+    var result1 = results[0] as JsonObject;
+    Assert.NotNull(result1);
+    Assert.Equal(1, result1!["id"]?.GetValue<int>());
+    Assert.Equal("a", result1!["value"]?.GetValue<string>());
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithFieldProjectionMissingFields_SkipsAbsentFields()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    // isbn field is not present in book[1]
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.books[title, isbn]"));
+
+    Assert.Equal(3, results.Count);
+    
+    var result2 = results[1] as JsonObject;
+    Assert.NotNull(result2);
+    Assert.Equal("b2", result2!["title"]?.GetValue<string>());
+    Assert.False(result2!.ContainsKey("isbn")); // isbn not present in book[1]
   }
 
   [Fact]
@@ -403,12 +483,29 @@ public sealed class StreamJsonExtractionExtensionsTests
   {
     using var stream = CreateStream(SampleJson);
 
-    var expected = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.obj[p2,p1]"));
-    var actual = await CollectAsync(SampleJson.ExtractAllJsonMatchesAsync("$.obj[p2,p1]"));
+    var expected = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.obj['p2','p1']"));
+    var actual = await CollectAsync(SampleJson.ExtractAllJsonMatchesAsync("$.obj['p2','p1']"));
 
     Assert.Equal(expected.Count, actual.Count);
     for (var i = 0; i < expected.Count; i++)
       AssertNodeEquals(expected[i], actual[i]);
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithFieldProjectionOnObject_ReturnsProjectedObject()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.obj[p2, p1]"));
+
+    // Field projection on a single object returns 1 projected object
+    Assert.Single(results);
+    
+    var result = results[0] as JsonObject;
+    Assert.NotNull(result);
+    Assert.Equal("v2", result!["p2"]?.GetValue<string>());
+    Assert.Equal("v1", result!["p1"]?.GetValue<string>());
+    Assert.False(result!.ContainsKey("obj")); // Should not have other properties
   }
 
   [Fact]

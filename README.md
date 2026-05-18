@@ -23,6 +23,16 @@ await foreach (var item in stream.ExtractAllJsonMatchesAsync("$.items[*].id"))
 {
     Console.WriteLine(item);
 }
+
+// Union indices (multiple array elements)
+await foreach (var item in stream.ExtractAllJsonMatchesAsync("$.items[0,2,4]"))
+{
+    Console.WriteLine(item);
+}
+
+// Union properties (multiple object fields)
+JsonNode? selected = await stream.ExtractFirstJsonMatchAsync("$.book[title,author]");
+Console.WriteLine(selected);
 ```
 
 ## NuGet publishing (GitHub only)

@@ -48,6 +48,12 @@ public sealed class JsonPathValidatorTests
   [InlineData("$")]
   [InlineData("$.name")]
   [InlineData("$.items[?(@.price < 10)]")]
+  [InlineData("$.store.book[?(@.price < 20)][title]")]
+  [InlineData("$.store[name]")]
+  [InlineData("$.store.book[?(@.price < 20)][exist(title)]")]
+  [InlineData("$.store.book[?(@.price < 20)][count(title)]")]
+  [InlineData("$.store.book[?(@.price < 20)][exist(*)]")]
+  [InlineData("$.store.book[?(@.price < 20)][count(*)]")]
   public void IsValid_ValidPath_ReturnsTrue(string? path)
   {
     Assert.True(JsonPathValidator.IsValid(path));

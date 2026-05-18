@@ -75,6 +75,14 @@ internal static class JsonPathMatcher
         case JsonPathSegmentType.FieldExclusion:
           CollectFieldExclusionMatches(node, segment.ProjectionFields, results);
           break;
+
+        case JsonPathSegmentType.FieldExistence:
+          CollectFieldExistenceMatches(node, segment.PropertyName, results);
+          break;
+
+        case JsonPathSegmentType.FieldCount:
+          CollectFieldCountMatches(node, segment.PropertyName, results);
+          break;
       }
     }
 
@@ -297,6 +305,85 @@ internal static class JsonPathMatcher
     }
 
     results.Add(excludedObject);
+  }
+
+  private static void CollectFieldExistenceMatches(JsonNode? node, string? fieldName, List<JsonNode?> results)
+  {
+    if (string.IsNullOrWhiteSpace(fieldName))
+      return;
+
+    if (fieldName == "*")
+    {
+      bool any = node switch
+      {
+        JsonObject obj => obj.Count > 0,
+        JsonArray array => array.Count > 0,
+        _ => false
+      };
+
+      results.Add(JsonValue.Create(any));
+      return;
+    }
+
+    bool exists = node switch
+    {
+      JsonObject obj => obj.ContainsKey(fieldName),
+      JsonArray array => AnyItemContainsField(array, fieldName),
+      _ => false
+    };
+
+    results.Add(JsonValue.Create(exists));
+  }
+
+  private static void CollectFieldCountMatches(JsonNode? node, string? fieldName, List<JsonNode?> results)
+  {
+    if (string.IsNullOrWhiteSpace(fieldName))
+      return;
+
+    if (fieldName == "*")
+    {
+      int anyCount = node switch
+      {
+        JsonObject obj => obj.Count,
+        JsonArray array => array.Count,
+        _ => 0
+      };
+
+      results.Add(JsonValue.Create(anyCount));
+      return;
+    }
+
+    int count = node switch
+    {
+      JsonObject obj => obj.ContainsKey(fieldName) ? 1 : 0,
+      JsonArray array => CountItemsWithField(array, fieldName),
+      _ => 0
+    };
+
+    results.Add(JsonValue.Create(count));
+  }
+
+  private static bool AnyItemContainsField(JsonArray array, string fieldName)
+  {
+    foreach (var item in array)
+    {
+      if (item is JsonObject obj && obj.ContainsKey(fieldName))
+        return true;
+    }
+
+    return false;
+  }
+
+  private static int CountItemsWithField(JsonArray array, string fieldName)
+  {
+    var count = 0;
+    foreach (var item in array)
+    {
+      if (item is JsonObject obj && obj.ContainsKey(fieldName))
+        count++;
+    }
+
+    return count;
   }
 }
 

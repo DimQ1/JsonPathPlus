@@ -399,6 +399,189 @@ public sealed class StreamJsonExtractionExtensionsTests
   }
 
   [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithSingleFieldProjection_ReturnsProjectedObjects()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.books[title]"));
+
+    Assert.Equal(3, results.Count);
+
+    var result1 = results[0] as JsonObject;
+    Assert.NotNull(result1);
+    Assert.Equal("b1", result1!["title"]?.GetValue<string>());
+    Assert.Single(result1!);
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithSingleFieldProjectionOnObject_ReturnsProjectedObject()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.obj[p1]"));
+
+    Assert.Single(results);
+    var result = results[0] as JsonObject;
+    Assert.NotNull(result);
+    Assert.Equal("v1", result!["p1"]?.GetValue<string>());
+    Assert.Single(result!);
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithStoreBookFilterAndSingleProjection_ReturnsProjectedTitleObjects()
+  {
+    const string storeJson = """
+    {
+      "store": {
+        "name": "City Books",
+        "book": [
+          { "title": "The Great Gatsby", "price": 8.99 },
+          { "title": "Clean Code", "price": 34.99 },
+          { "title": "The Hobbit", "price": 12.49 }
+        ]
+      }
+    }
+    """;
+
+    using var stream = CreateStream(storeJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.store.book[?(@.price < 20)][title]"));
+
+    Assert.Equal(2, results.Count);
+
+    var first = results[0] as JsonObject;
+    Assert.NotNull(first);
+    Assert.Equal("The Great Gatsby", first!["title"]?.GetValue<string>());
+    Assert.Single(first!);
+
+    var second = results[1] as JsonObject;
+    Assert.NotNull(second);
+    Assert.Equal("The Hobbit", second!["title"]?.GetValue<string>());
+    Assert.Single(second!);
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithStoreNameSingleProjection_ReturnsProjectedObject()
+  {
+    const string storeJson = """
+    {
+      "store": {
+        "name": "City Books",
+        "book": [
+          { "title": "The Great Gatsby", "price": 8.99 }
+        ]
+      }
+    }
+    """;
+
+    using var stream = CreateStream(storeJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.store[name]"));
+
+    Assert.Single(results);
+    var result = results[0] as JsonObject;
+    Assert.NotNull(result);
+    Assert.Equal("City Books", result!["name"]?.GetValue<string>());
+    Assert.Single(result!);
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithExistFunctionOnFilteredBooks_ReturnsBoolPerMatch()
+  {
+    const string storeJson = """
+    {
+      "store": {
+        "book": [
+          { "title": "The Great Gatsby", "price": 8.99 },
+          { "title": "Clean Code", "price": 34.99 },
+          { "title": "The Hobbit", "price": 12.49 }
+        ]
+      }
+    }
+    """;
+
+    using var stream = CreateStream(storeJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.store.book[?(@.price < 20)][exist(title)]"));
+
+    Assert.Equal(2, results.Count);
+    AssertNodeEquals(JsonValue.Create(true), results[0]);
+    AssertNodeEquals(JsonValue.Create(true), results[1]);
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithCountFunctionOnFilteredBooks_ReturnsNumberPerMatch()
+  {
+    const string storeJson = """
+    {
+      "store": {
+        "book": [
+          { "title": "The Great Gatsby", "price": 8.99 },
+          { "title": "Clean Code", "price": 34.99 },
+          { "title": "The Hobbit", "price": 12.49 }
+        ]
+      }
+    }
+    """;
+
+    using var stream = CreateStream(storeJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.store.book[?(@.price < 20)][count(title)]"));
+
+    Assert.Equal(2, results.Count);
+    AssertNodeEquals(JsonValue.Create(1), results[0]);
+    AssertNodeEquals(JsonValue.Create(1), results[1]);
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithExistWildcardOnFilteredBooks_ReturnsBoolPerMatch()
+  {
+    const string storeJson = """
+    {
+      "store": {
+        "book": [
+          { "title": "The Great Gatsby", "price": 8.99 },
+          { "title": "Clean Code", "price": 34.99 },
+          { "title": "The Hobbit", "price": 12.49 }
+        ]
+      }
+    }
+    """;
+
+    using var stream = CreateStream(storeJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.store.book[?(@.price < 20)][exist(*)]"));
+
+    Assert.Equal(2, results.Count);
+    AssertNodeEquals(JsonValue.Create(true), results[0]);
+    AssertNodeEquals(JsonValue.Create(true), results[1]);
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithCountWildcardOnFilteredBooks_ReturnsFieldCountPerMatch()
+  {
+    const string storeJson = """
+    {
+      "store": {
+        "book": [
+          { "title": "The Great Gatsby", "price": 8.99 },
+          { "title": "Clean Code", "price": 34.99 },
+          { "title": "The Hobbit", "price": 12.49 }
+        ]
+      }
+    }
+    """;
+
+    using var stream = CreateStream(storeJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.store.book[?(@.price < 20)][count(*)]"));
+
+    Assert.Equal(2, results.Count);
+    AssertNodeEquals(JsonValue.Create(2), results[0]);
+    AssertNodeEquals(JsonValue.Create(2), results[1]);
+  }
+
+  [Fact]
   public async Task ExtractAllJsonMatchesAsync_WithRecursiveDescent_ReturnsMatchesAtAnyDepth()
   {
     using var stream = CreateStream(SampleJson);
@@ -647,10 +830,10 @@ public sealed class StreamJsonExtractionExtensionsTests
   [Fact]
   public async Task ExtractFirstJsonMatchAsync_InvalidBracketContent_DoesNotThrowReturnsArray()
   {
-    // $.items[notanindex] — not wildcard/filter/computed/union/range/int; segment discarded
+    // $.items[not-an-index] — invalid identifier for projection, so bracket segment is discarded
     using var stream = CreateStream(SampleJson);
 
-    var result = await stream.ExtractFirstJsonMatchAsync("$.items[notanindex]");
+    var result = await stream.ExtractFirstJsonMatchAsync("$.items[not-an-index]");
 
     Assert.IsType<System.Text.Json.Nodes.JsonArray>(result);
   }

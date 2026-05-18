@@ -119,6 +119,10 @@ internal static class JsonPathParser
       else
         segments.Add(new JsonPathSegment(null, -1, -1, JsonPathSegmentType.PropertyUnion, null, propertyUnion));
     }
+    else if (TryParseExistFunction(inner, out var existField))
+      segments.Add(new JsonPathSegment(existField, -1, -1, JsonPathSegmentType.FieldExistence));
+    else if (TryParseCountFunction(inner, out var countField))
+      segments.Add(new JsonPathSegment(countField, -1, -1, JsonPathSegmentType.FieldCount));
     else if (TryParseFieldExclusion(inner, out var exclusionFields))
       segments.Add(new JsonPathSegment(null, -1, -1, JsonPathSegmentType.FieldExclusion, null, null, null, null, exclusionFields));
     else if (TryParseFieldProjection(inner, out var projectionFields))
@@ -225,7 +229,7 @@ internal static class JsonPathParser
   {
     fields = null;
 
-    if (projectionStr.IndexOf(',') < 0)
+    if (projectionStr.Length == 0)
       return false;
 
     var parts = projectionStr.ToString().Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
@@ -258,6 +262,46 @@ internal static class JsonPathParser
     }
 
     return false;
+  }
+
+  private static bool TryParseExistFunction(ReadOnlySpan<char> functionStr, out string? fieldName)
+  {
+    fieldName = null;
+
+    const string prefix = "exist(";
+    if (!functionStr.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || functionStr[^1] != ')')
+      return false;
+
+    var inner = functionStr[prefix.Length..^1].Trim();
+    if (inner.Length == 0)
+      return false;
+
+    var field = inner.ToString();
+    if (field != "*" && !IsValidIdentifier(field))
+      return false;
+
+    fieldName = field;
+    return true;
+  }
+
+  private static bool TryParseCountFunction(ReadOnlySpan<char> functionStr, out string? fieldName)
+  {
+    fieldName = null;
+
+    const string prefix = "count(";
+    if (!functionStr.StartsWith(prefix, StringComparison.OrdinalIgnoreCase) || functionStr[^1] != ')')
+      return false;
+
+    var inner = functionStr[prefix.Length..^1].Trim();
+    if (inner.Length == 0)
+      return false;
+
+    var field = inner.ToString();
+    if (field != "*" && !IsValidIdentifier(field))
+      return false;
+
+    fieldName = field;
+    return true;
   }
 
   private static bool IsValidIdentifier(string name)

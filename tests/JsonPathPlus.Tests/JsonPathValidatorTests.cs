@@ -172,4 +172,37 @@ public sealed class JsonPathValidatorTests
 
     Assert.True(result.IsValid, result.Error);
   }
+
+  // ── Field Exclusion Tests ────────────────────────────────────────────────
+
+  [Theory]
+  [InlineData("$.books[!title]")]
+  [InlineData("$.books[!title, !price]")]
+  [InlineData("$.items[*][!name]")]
+  [InlineData("$.items[0:2][!id, !value]")]
+  [InlineData("$.items[0,2][!price]")]
+  [InlineData("$.books[?(@.price > 2)][!title, !price]")]
+  public void Validate_FieldExclusionPath_ReturnsValid(string path)
+  {
+    var result = JsonPathValidator.Validate(path);
+
+    Assert.True(result.IsValid, $"Expected valid for: {path}, but got error: {result.Error}");
+    Assert.Null(result.Error);
+  }
+
+  [Fact]
+  public void Validate_SingleFieldExclusion_ReturnsValid()
+  {
+    var result = JsonPathValidator.Validate("$.books[!title]");
+
+    Assert.True(result.IsValid, result.Error);
+  }
+
+  [Fact]
+  public void Validate_MultipleFieldExclusion_ReturnsValid()
+  {
+    var result = JsonPathValidator.Validate("$.books[!title, !price, !author]");
+
+    Assert.True(result.IsValid, result.Error);
+  }
 }

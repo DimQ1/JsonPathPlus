@@ -71,6 +71,10 @@ internal static class JsonPathMatcher
         case JsonPathSegmentType.FieldProjection:
           CollectFieldProjectionMatches(node, segment.ProjectionFields, results);
           break;
+
+        case JsonPathSegmentType.FieldExclusion:
+          CollectFieldExclusionMatches(node, segment.ProjectionFields, results);
+          break;
       }
     }
 
@@ -257,6 +261,42 @@ internal static class JsonPathMatcher
     }
 
     results.Add(projectedObject);
+  }
+
+  private static void CollectFieldExclusionMatches(JsonNode? node, string[]? fields, List<JsonNode?> results)
+  {
+    if (fields == null || fields.Length == 0)
+      return;
+
+    if (node is JsonArray array)
+    {
+      foreach (var item in array)
+      {
+        ExcludeFields(item, fields, results);
+      }
+      return;
+    }
+
+    ExcludeFields(node, fields, results);
+  }
+
+  private static void ExcludeFields(JsonNode? node, string[] fields, List<JsonNode?> results)
+  {
+    if (node is not JsonObject obj)
+      return;
+
+    var excludedObject = new JsonObject();
+    var excludeSet = new HashSet<string>(fields);
+
+    foreach (var prop in obj)
+    {
+      if (!excludeSet.Contains(prop.Key))
+      {
+        excludedObject[prop.Key] = prop.Value?.DeepClone();
+      }
+    }
+
+    results.Add(excludedObject);
   }
 }
 

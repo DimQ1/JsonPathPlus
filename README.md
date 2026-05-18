@@ -96,6 +96,8 @@ git push -u origin release_1.0.0
 | Comparison filter | `$.items[?(@.price < 10)]` | Elements matching a comparison | ✅ Implemented |
 | Logical filter | `$.items[?(@.p > 1 && @.p < 5)]` | Filters with `&&` / `\|\|` | ✅ Implemented |
 | Computed index expression | `$.items[(@.length-1)]` | Index from expression evaluated against array length | ✅ Implemented |
+| Field inclusion projection | `$.books[title, author]` | Include only specified fields in result objects | ✅ Implemented |
+| Field exclusion | `$.books[!title, !price]` | Exclude specified fields from result objects | ✅ Implemented |
 
 ## API reference
 
@@ -141,6 +143,45 @@ if (!result.IsValid)
 | Computed index missing `)` | `$.items[(@.length-1]` | `Malformed computed index expression at position 7: missing closing ')'.` |
 
 `null` and empty strings are considered valid (they select the root document). Bracket characters inside quoted string literals in filter expressions are handled correctly and do not produce false positives.
+
+### Field projection and exclusion
+
+**Field inclusion projection** selects only specified fields:
+
+```csharp
+// Returns only title, author, isbn fields
+await foreach (var book in stream.ExtractAllJsonMatchesAsync("$.books[*][title, author, isbn]"))
+{
+    Console.WriteLine(book);
+}
+// Output: { "title": "...", "author": "...", "isbn": "..." }
+```
+
+**Field exclusion** removes specified fields from result objects:
+
+```csharp
+// Returns all fields except title and price
+await foreach (var book in stream.ExtractAllJsonMatchesAsync("$.store.book[?(@.price > 2)][!title, !price]"))
+{
+    Console.WriteLine(book);
+}
+// Output: { "author": "J.R.R. Tolkien", "isbn": "978-0547928227", "category": "fiction" }
+```
+
+Both features work on individual objects and arrays of objects:
+
+| Syntax | Example | Result |
+|---|---|---|
+| Single field exclusion | `$.books[0][!title]` | Book object without title field |
+| Multiple field exclusion | `$.books[*][!title, !price, !meta]` | All books without title, price, meta fields |
+| Exclusion with filters | `$.books[?(@.price > 10)][!author]` | Books over $10 without author field |
+| Exclusion with ranges | `$.books[0:2][!isbn]` | First two books without isbn field |
+| Exclusion on arrays | `$[*][!name]` | Array elements without name field |
+
+**Behavior:**
+- Exclusion only applies to objects. Arrays and scalar values are returned unchanged.
+- A field exclusion segment is applied **after** all previous path segments complete.
+- Excluding all fields returns an empty object `{}`.
 
 ## Malformed path behavior
 

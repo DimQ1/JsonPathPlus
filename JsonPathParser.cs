@@ -119,6 +119,8 @@ internal static class JsonPathParser
       else
         segments.Add(new JsonPathSegment(null, -1, -1, JsonPathSegmentType.PropertyUnion, null, propertyUnion));
     }
+    else if (TryParseFieldExclusion(inner, out var exclusionFields))
+      segments.Add(new JsonPathSegment(null, -1, -1, JsonPathSegmentType.FieldExclusion, null, null, null, null, exclusionFields));
     else if (TryParseFieldProjection(inner, out var projectionFields))
       segments.Add(new JsonPathSegment(null, -1, -1, JsonPathSegmentType.FieldProjection, null, null, null, null, projectionFields));
     else if (TryParseArrayRange(inner, out var rangeStart, out var rangeEnd))
@@ -175,6 +177,48 @@ internal static class JsonPathParser
     }
 
     return propertyUnion.Length > 0;
+  }
+
+  private static bool TryParseFieldExclusion(ReadOnlySpan<char> exclusionStr, out string[]? fields)
+  {
+    fields = null;
+
+    // Check if it starts with '!' (required for field exclusion)
+    if (exclusionStr.Length == 0 || exclusionStr[0] != '!')
+      return false;
+
+    var parts = exclusionStr.ToString().Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
+    if (parts.Length == 0)
+      return false;
+
+    var fieldList = new List<string>(parts.Length);
+    
+    foreach (var part in parts)
+    {
+      // Must start with '!' for exclusion
+      if (!part.StartsWith('!'))
+        return false;
+      
+      var fieldName = part[1..]; // Remove the '!' prefix
+      
+      // Skip if it's a number (that's for array union)
+      if (int.TryParse(fieldName, out _))
+        return false;
+      
+      // Check if it's a valid identifier (alphanumeric + underscore, not starting with digit)
+      if (!IsValidIdentifier(fieldName))
+        return false;
+      
+      fieldList.Add(fieldName);
+    }
+
+    if (fieldList.Count > 0)
+    {
+      fields = fieldList.ToArray();
+      return true;
+    }
+
+    return false;
   }
 
   private static bool TryParseFieldProjection(ReadOnlySpan<char> projectionStr, out string[]? fields)

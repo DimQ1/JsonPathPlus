@@ -24,5 +24,6 @@ internal enum JsonPathSegmentType
   ComputedIndex,
   Wildcard,
   RecursiveDescent,
-  FieldProjection
+  FieldProjection,
+  FieldExclusion
 }

@@ -699,6 +699,190 @@ public sealed class StreamJsonExtractionExtensionsTests
     AssertNodeEquals(JsonNode.Parse(SampleJson), result);
   }
 
+  // ── Field exclusion tests ────────────────────────────────────────────────
+
+  [Fact]
+  public async Task ExtractFirstJsonMatchAsync_WithFieldExclusion_ExcludesSpecifiedFields()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    var result = await stream.ExtractFirstJsonMatchAsync("$.books[0][!title, !price]");
+
+    Assert.IsType<JsonObject>(result);
+    var obj = result as JsonObject;
+    Assert.NotNull(obj);
+    Assert.False(obj!.ContainsKey("title"));
+    Assert.False(obj!.ContainsKey("price"));
+    Assert.True(obj!.ContainsKey("author"));
+    Assert.True(obj!.ContainsKey("isbn"));
+    Assert.True(obj!.ContainsKey("meta"));
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithFilterAndFieldExclusion_ReturnsFilteredWithExcludedFields()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.books[?(@.price > 2)][!title, !price]"));
+
+    Assert.Equal(3, results.Count);
+    
+    // All results should not have title and price
+    foreach (var result in results)
+    {
+      Assert.IsType<JsonObject>(result);
+      var obj = result as JsonObject;
+      Assert.NotNull(obj);
+      Assert.False(obj!.ContainsKey("title"));
+      Assert.False(obj!.ContainsKey("price"));
+      Assert.True(obj!.ContainsKey("author"));
+    }
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithWildcardAndFieldExclusion_ExcludesFieldsFromAllMatches()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.books[*][!isbn, !meta]"));
+
+    Assert.Equal(3, results.Count);
+    
+    foreach (var result in results)
+    {
+      Assert.IsType<JsonObject>(result);
+      var obj = result as JsonObject;
+      Assert.NotNull(obj);
+      Assert.False(obj!.ContainsKey("isbn"));
+      Assert.False(obj!.ContainsKey("meta"));
+      Assert.True(obj!.ContainsKey("title"));
+      Assert.True(obj!.ContainsKey("author"));
+    }
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithArrayIndexAndFieldExclusion_ExcludesFieldsFromIndexedElement()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.books[1][!author, !meta]"));
+
+    Assert.Single(results);
+    var obj = results[0] as JsonObject;
+    Assert.NotNull(obj);
+    Assert.False(obj!.ContainsKey("author"));
+    Assert.False(obj!.ContainsKey("meta"));
+    Assert.True(obj!.ContainsKey("title"));
+    Assert.True(obj!.ContainsKey("price"));
+  }
+
+  [Fact]
+  public async Task ExtractFirstJsonMatchAsync_WithSingleFieldExclusion_ExcludesOnlyThatField()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    var result = await stream.ExtractFirstJsonMatchAsync("$.books[0][!title]");
+
+    Assert.IsType<JsonObject>(result);
+    var obj = result as JsonObject;
+    Assert.NotNull(obj);
+    Assert.False(obj!.ContainsKey("title"));
+    Assert.True(obj!.ContainsKey("author"));
+    Assert.True(obj!.ContainsKey("price"));
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithArrayRangeAndFieldExclusion_ExcludesFieldsFromRangeElements()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.books[0:2][!isbn]"));
+
+    Assert.Equal(2, results.Count);
+    foreach (var result in results)
+    {
+      Assert.IsType<JsonObject>(result);
+      var obj = result as JsonObject;
+      Assert.NotNull(obj);
+      Assert.False(obj!.ContainsKey("isbn"));
+    }
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithArrayUnionAndFieldExclusion_ExcludesFieldsFromUnionElements()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.books[0,2][!price, !meta]"));
+
+    Assert.Equal(2, results.Count);
+    foreach (var result in results)
+    {
+      Assert.IsType<JsonObject>(result);
+      var obj = result as JsonObject;
+      Assert.NotNull(obj);
+      Assert.False(obj!.ContainsKey("price"));
+      Assert.False(obj!.ContainsKey("meta"));
+      Assert.True(obj!.ContainsKey("title"));
+    }
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithPropertyAndFieldExclusion_ExcludesFieldsFromSelectedObject()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.obj[!p2]"));
+
+    Assert.Single(results);
+    var obj = results[0] as JsonObject;
+    Assert.NotNull(obj);
+    Assert.False(obj!.ContainsKey("p2"));
+    Assert.True(obj!.ContainsKey("p1"));
+  }
+
+  [Fact]
+  public async Task ExtractFirstJsonMatchAsync_FieldExclusionOnNonObject_ReturnsNothing()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    var result = await stream.ExtractFirstJsonMatchAsync("$.name[!title]");
+
+    // String is not an object, so field exclusion returns nothing
+    Assert.Null(result);
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_FieldExclusionExcludingAllFields_ReturnsEmptyObjects()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$.books[0][!title, !author, !price, !isbn, !category, !meta]"));
+
+    Assert.Single(results);
+    var obj = results[0] as JsonObject;
+    Assert.NotNull(obj);
+    Assert.Empty(obj!); // Object has no properties
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_FieldExclusionWithRootArrayStreaming_ExcludesFields()
+  {
+    using var stream = CreateStream(RootArrayJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$[*][!name]"));
+
+    Assert.Equal(4, results.Count);
+    foreach (var result in results)
+    {
+      Assert.IsType<JsonObject>(result);
+      var obj = result as JsonObject;
+      Assert.NotNull(obj);
+      Assert.False(obj!.ContainsKey("name"));
+      Assert.True(obj!.ContainsKey("id"));
+    }
+  }
+
   private static MemoryStream CreateStream(string json)
     => new(Encoding.UTF8.GetBytes(json));
 

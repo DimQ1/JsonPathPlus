@@ -100,11 +100,17 @@ git push -u origin release_1.0.0
 ## API reference
 
 ```csharp
-// Returns the first matching node, or null if not found.
+// Stream input
 Task<JsonNode?> ExtractFirstJsonMatchAsync(this Stream stream, string? selectToken)
-
-// Returns an async sequence of all matching nodes.
 IAsyncEnumerable<JsonNode?> ExtractAllJsonMatchesAsync(this Stream stream, string? selectToken)
+
+// JsonNode input
+Task<JsonNode?> ExtractFirstJsonMatchAsync(this JsonNode? node, string? selectToken)
+IAsyncEnumerable<JsonNode?> ExtractAllJsonMatchesAsync(this JsonNode? node, string? selectToken)
+
+// Raw JSON string input
+Task<JsonNode?> ExtractFirstJsonMatchAsync(this string json, string? selectToken)
+IAsyncEnumerable<JsonNode?> ExtractAllJsonMatchesAsync(this string json, string? selectToken)
 ```
 
 Passing `null` or `"$"` as `selectToken` returns the entire document.
@@ -113,15 +119,32 @@ Passing `null` or `"$"` as `selectToken` returns the entire document.
 
 The section below details the remaining planned work. All earlier phases (negative/union indexing, filter expressions, computed index expressions) are implemented.
 
-### Phase 1 — True streaming (no full-document parse)
+### Phase 0.5 - API parity for input types (implemented)
 
-> **Goal:** Eliminate the `JsonNode.ParseAsync` call so large streams are traversed without holding the whole document in RAM.
+> **Goal:** Provide the same extraction ergonomics for `JsonNode` and raw JSON `string` inputs as existing `Stream` extensions.
 
-| Feature | Notes |
+| API | Notes |
 |---|---|
-| Token-by-token path navigation | Introduce a streaming navigator that reuses `JsonPathParser` output and walks `Utf8JsonReader` tokens |
-| Streaming multi-match | Yield each match as it is found; suitable for very large arrays |
-| Memory cap option | Accept a `maxNodeBytes` threshold; fall back to full parse above it |
+| `Task<JsonNode?> ExtractFirstJsonMatchAsync(this JsonNode? node, string? selectToken)` | In-memory input; avoids stream setup when caller already has a parsed node |
+| `IAsyncEnumerable<JsonNode?> ExtractAllJsonMatchesAsync(this JsonNode? node, string? selectToken)` | Multi-match enumeration over existing node graphs |
+| `Task<JsonNode?> ExtractFirstJsonMatchAsync(this string json, string? selectToken)` | Convenience overload that parses JSON text and reuses matcher pipeline |
+| `IAsyncEnumerable<JsonNode?> ExtractAllJsonMatchesAsync(this string json, string? selectToken)` | Convenience overload for list extraction from raw JSON strings |
+
+**Design notes:**
+1. Keep matcher behavior identical across `Stream`, `JsonNode`, and `string` overloads.
+2. Centralize parsed-segment and match execution to avoid duplicated extraction logic.
+3. Add API-level tests that assert parity of outputs across all three input types.
+
+### Phase 1 — Streaming strategy (partially implemented)
+
+> **Goal:** Traverse large streams with a streaming strategy where possible.
+
+| Feature | Status | Notes |
+|---|---|
+| Root-array streaming matcher | ✅ Implemented | Uses streaming enumeration for root-array paths such as `$[*]`, `$[1:3]`, `$[0,2]`, and root-array filters |
+| Streaming multi-match | ✅ Implemented (root-array scope) | Yields matches as they are found for supported root-array selectors |
+| Token-by-token object-root navigation | ⏳ Planned | Object-root streaming traversal is still planned |
+| Memory cap option | ⏳ Planned | Configurable memory threshold is still planned |
 
 **Implementation sketch:**
 1. Add a dedicated streaming matcher (for example `JsonPathStreamingMatcher`) that evaluates parsed `JsonPathSegment` lists against `Utf8JsonReader`.

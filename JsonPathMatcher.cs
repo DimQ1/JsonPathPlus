@@ -10,11 +10,15 @@ internal static class JsonPathMatcher
   private readonly record struct MatchContext(JsonNode? Node, string Path);
 
   public static List<JsonNode?> FindMatches(JsonNode? root, List<JsonPathSegment> segments)
+    => FindMatches(root, segments, 0);
+
+  public static List<JsonNode?> FindMatches(JsonNode? root, List<JsonPathSegment> segments, int startIndex)
   {
     var current = new List<JsonNode?> { root };
 
-    foreach (var segment in segments)
+    for (var segmentIndex = startIndex; segmentIndex < segments.Count; segmentIndex++)
     {
+      var segment = segments[segmentIndex];
       current = FindSegmentMatches(current, segment);
       if (current.Count == 0)
         break;
@@ -27,11 +31,19 @@ internal static class JsonPathMatcher
     JsonNode? root,
     List<JsonPathSegment> segments,
     string rootPath = "$")
+    => FindMatchesWithPaths(root, segments, 0, rootPath);
+
+  public static List<JsonPathMatch> FindMatchesWithPaths(
+    JsonNode? root,
+    List<JsonPathSegment> segments,
+    int startIndex,
+    string rootPath = "$")
   {
     var current = new List<MatchContext> { new(root, rootPath) };
 
-    foreach (var segment in segments)
+    for (var segmentIndex = startIndex; segmentIndex < segments.Count; segmentIndex++)
     {
+      var segment = segments[segmentIndex];
       current = FindSegmentMatchesWithPaths(current, segment);
       if (current.Count == 0)
         break;

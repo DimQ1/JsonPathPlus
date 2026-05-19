@@ -14,19 +14,21 @@
 2. Extended the same `JsonElement` fast path to `ExtractAllJsonMatchesWithPathsAsync` for object-root selectors.
 3. Applied a `JsonElement`-based fast path to root-array streaming for simple wildcard/index/range/union selectors while preserving the existing fallback for unsupported segment types.
 4. Avoided `GetRawText()` plus `JsonNode.Parse()` for final `string`, `bool`, and `null` matches by materializing those scalars directly.
+5. Removed the streaming-path `segments.Skip(1).ToList()` copies by switching core matcher entry points to segment start-index traversal.
 
 ### Measured outcome so far
 
 1. Object-root simple and range selectors remain materially improved versus baseline, with roughly 38–50% lower mean time and 75–86% lower allocation.
 2. Root-array wildcard is now materially better than baseline at both latency and allocation.
 3. Root-array first-index is effectively flat on latency versus baseline, but uses less memory.
+4. Start-index traversal produced small additional allocation reductions across the measured stream cases and a further latency win on root-array wildcard, without changing behavior.
 
 ### Revised next priorities
 
 1. Add dedicated `WithPaths` benchmarks for object-root and root-array streaming so the new path-aware fast path has its own baseline.
-2. Remove `segments.Skip(1).ToList()` allocations by switching the matcher to segment start-index traversal.
-3. Reduce the remaining `MaterializeElement` cost for numeric scalars if that can be done without changing JSON semantics.
-4. Revisit root-array filter and other unsupported first-segment shapes only after the benchmark coverage above is in place.
+2. Reduce the remaining `MaterializeElement` cost for numeric scalars if that can be done without changing JSON semantics.
+3. Revisit root-array filter and other unsupported first-segment shapes only after the benchmark coverage above is in place.
+4. Consider matcher-level list pooling only if the next benchmark pass shows traversal allocations still dominating after the benchmark coverage above is expanded.
 
 ---
 

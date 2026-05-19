@@ -11,23 +11,29 @@ internal static class JsonPathExtractionCore
       : JsonPathParser.Parse(selectToken);
 
   public static JsonNode? FindFirstMatch(JsonNode? root, List<JsonPathSegment> segments)
+    => FindFirstMatch(root, segments, 0);
+
+  public static JsonNode? FindFirstMatch(JsonNode? root, List<JsonPathSegment> segments, int startIndex)
   {
-    if (segments.Count == 0)
+    if (startIndex >= segments.Count)
       return root;
 
-    var matches = JsonPathMatcher.FindMatches(root, segments);
+    var matches = JsonPathMatcher.FindMatches(root, segments, startIndex);
     return matches.Count > 0 ? matches[0] : null;
   }
 
   public static IEnumerable<JsonNode?> FindAllMatches(JsonNode? root, List<JsonPathSegment> segments)
+    => FindAllMatches(root, segments, 0);
+
+  public static IEnumerable<JsonNode?> FindAllMatches(JsonNode? root, List<JsonPathSegment> segments, int startIndex)
   {
-    if (segments.Count == 0)
+    if (startIndex >= segments.Count)
     {
       yield return root;
       yield break;
     }
 
-    foreach (var match in JsonPathMatcher.FindMatches(root, segments))
+    foreach (var match in JsonPathMatcher.FindMatches(root, segments, startIndex))
       yield return match;
   }
 
@@ -35,14 +41,21 @@ internal static class JsonPathExtractionCore
     JsonNode? root,
     List<JsonPathSegment> segments,
     string rootPath = "$")
+    => FindAllMatchesWithPaths(root, segments, 0, rootPath);
+
+  public static IEnumerable<JsonPathMatch> FindAllMatchesWithPaths(
+    JsonNode? root,
+    List<JsonPathSegment> segments,
+    int startIndex,
+    string rootPath = "$")
   {
-    if (segments.Count == 0)
+    if (startIndex >= segments.Count)
     {
       yield return new JsonPathMatch(rootPath, root);
       yield break;
     }
 
-    foreach (var match in JsonPathMatcher.FindMatchesWithPaths(root, segments, rootPath))
+    foreach (var match in JsonPathMatcher.FindMatchesWithPaths(root, segments, startIndex, rootPath))
       yield return match;
   }
 }

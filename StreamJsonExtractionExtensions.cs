@@ -47,8 +47,9 @@ public static class StreamJsonExtractionExtensions
 
     var segments = JsonPathExtractionCore.ParseSegments(selectToken);
 
-    if (JsonPathStreamingMatcher.CanUseStreaming(stream, segments))
-      return await JsonPathStreamingMatcher.ExtractFirstMatchAsync(stream, segments);
+    var head = JsonPathStreamingMatcher.CanUseStreaming(stream, segments);
+    if (head.HasValue)
+      return await JsonPathStreamingMatcher.ExtractFirstMatchAsync(stream, segments, head.Value);
 
     EnsureFullParseAllowed(stream, options);
 
@@ -85,9 +86,10 @@ public static class StreamJsonExtractionExtensions
 
     var segments = JsonPathExtractionCore.ParseSegments(selectToken);
 
-    if (JsonPathStreamingMatcher.CanUseStreaming(stream, segments))
+    var head = JsonPathStreamingMatcher.CanUseStreaming(stream, segments);
+    if (head.HasValue)
     {
-      await foreach (var match in JsonPathStreamingMatcher.ExtractAllMatchesAsync(stream, segments))
+      await foreach (var match in JsonPathStreamingMatcher.ExtractAllMatchesAsync(stream, segments, head.Value))
         yield return match;
       yield break;
     }
@@ -128,9 +130,10 @@ public static class StreamJsonExtractionExtensions
 
     var segments = JsonPathExtractionCore.ParseSegments(selectToken);
 
-    if (JsonPathStreamingMatcher.CanUseStreaming(stream, segments))
+    var head = JsonPathStreamingMatcher.CanUseStreaming(stream, segments);
+    if (head.HasValue)
     {
-      await foreach (var match in JsonPathStreamingMatcher.ExtractAllMatchesWithPathsAsync(stream, segments))
+      await foreach (var match in JsonPathStreamingMatcher.ExtractAllMatchesWithPathsAsync(stream, segments, head.Value))
         yield return match;
       yield break;
     }

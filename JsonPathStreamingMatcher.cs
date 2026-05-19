@@ -11,7 +11,7 @@ namespace JsonPathPlus;
 
 internal static class JsonPathStreamingMatcher
 {
-  private enum RootContainerKind
+  internal enum RootContainerKind
   {
     None,
     Array,
@@ -20,17 +20,34 @@ internal static class JsonPathStreamingMatcher
 
   private readonly record struct ElementPathMatch(JsonElement Element, string Path);
 
-  public static bool CanUseStreaming(Stream stream, List<JsonPathSegment> segments)
+  /// <summary>
+  /// Captures the root container kind and any bytes consumed during the initial peek,
+  /// so downstream extraction can continue from the correct position without re-seeking.
+  /// </summary>
+  public readonly record struct StreamHead
   {
-    if (segments.Count == 0 || !stream.CanSeek)
-      return false;
+    public RootContainerKind RootKind { get; init; }
+    public byte[]? HeadBytes { get; init; }
+    public bool IsEmpty => RootKind == RootContainerKind.None;
+  }
 
-    var rootKind = GetRootContainerKind(stream);
-    if (rootKind == RootContainerKind.None)
-      return false;
+  /// <summary>
+  /// Determines whether the stream can use the optimized streaming path.
+  /// Returns a <see cref="StreamHead"/> if streaming is possible, or <c>null</c> otherwise.
+  /// The caller must pass the returned <see cref="StreamHead"/> to the corresponding extract method.
+  /// Does not require the stream to be seekable.
+  /// </summary>
+  public static StreamHead? CanUseStreaming(Stream stream, List<JsonPathSegment> segments)
+  {
+    if (segments.Count == 0)
+      return null;
+
+    var head = PeekStreamHead(stream);
+    if (head.IsEmpty)
+      return null;
 
     var first = segments[0];
-    return rootKind switch
+    var canStream = head.RootKind switch
     {
       RootContainerKind.Array => first.SegmentType switch
       {
@@ -50,70 +67,118 @@ internal static class JsonPathStreamingMatcher
       },
       _ => false
     };
+
+    return canStream ? head : null;
   }
 
-  public static async Task<JsonNode?> ExtractFirstMatchAsync(Stream stream, List<JsonPathSegment> segments)
+  /// <summary>
+  /// Extracts the first match using the pre-peeked stream head.
+  /// The stream position must be immediately after the bytes captured in <paramref name="head"/>.
+  /// For seekable streams, the position is restored after extraction.
+  /// </summary>
+  public static async Task<JsonNode?> ExtractFirstMatchAsync(Stream stream, List<JsonPathSegment> segments, StreamHead head)
   {
-    var origin = stream.Position;
+    var origin = stream.CanSeek ? stream.Position : -1;
     try
     {
-      return GetRootContainerKind(stream) switch
+      using var effectiveStream = head.HeadBytes is { Length: > 0 }
+        ? CreateHeadPrependedStream(head.HeadBytes, stream)
+        : null;
+
+      var targetStream = effectiveStream ?? stream;
+
+      return head.RootKind switch
       {
-        RootContainerKind.Array => await ExtractFirstArrayRootMatchAsync(stream, segments),
-        RootContainerKind.Object => await ExtractFirstObjectRootMatchAsync(stream, segments),
+        RootContainerKind.Array => await ExtractFirstArrayRootMatchAsync(targetStream, segments),
+        RootContainerKind.Object => await ExtractFirstObjectRootMatchAsync(targetStream, segments),
         _ => null
       };
     }
     finally
     {
-      stream.Position = origin;
+      if (origin >= 0)
+        stream.Position = origin;
     }
   }
 
-  public static async IAsyncEnumerable<JsonNode?> ExtractAllMatchesAsync(Stream stream, List<JsonPathSegment> segments)
+  /// <summary>
+  /// Extracts all matches using the pre-peeked stream head.
+  /// The stream position must be immediately after the bytes captured in <paramref name="head"/>.
+  /// For seekable streams, the position is restored after extraction.
+  /// </summary>
+  public static async IAsyncEnumerable<JsonNode?> ExtractAllMatchesAsync(Stream stream, List<JsonPathSegment> segments, StreamHead head)
   {
-    var origin = stream.Position;
+    var origin = stream.CanSeek ? stream.Position : -1;
     try
     {
-      var rootKind = GetRootContainerKind(stream);
-      if (rootKind == RootContainerKind.Array)
+      using var effectiveStream = head.HeadBytes is { Length: > 0 }
+        ? CreateHeadPrependedStream(head.HeadBytes, stream)
+        : null;
+
+      var targetStream = effectiveStream ?? stream;
+
+      if (head.RootKind == RootContainerKind.Array)
       {
-        await foreach (var match in ExtractAllArrayRootMatchesAsync(stream, segments))
+        await foreach (var match in ExtractAllArrayRootMatchesAsync(targetStream, segments))
           yield return match;
       }
-      else if (rootKind == RootContainerKind.Object)
+      else if (head.RootKind == RootContainerKind.Object)
       {
-        await foreach (var match in ExtractAllObjectRootMatchesAsync(stream, segments))
+        await foreach (var match in ExtractAllObjectRootMatchesAsync(targetStream, segments))
           yield return match;
       }
     }
     finally
     {
-      stream.Position = origin;
+      if (origin >= 0)
+        stream.Position = origin;
     }
   }
 
-  public static async IAsyncEnumerable<JsonPathMatch> ExtractAllMatchesWithPathsAsync(Stream stream, List<JsonPathSegment> segments)
+  /// <summary>
+  /// Extracts all matches with paths using the pre-peeked stream head.
+  /// The stream position must be immediately after the bytes captured in <paramref name="head"/>.
+  /// For seekable streams, the position is restored after extraction.
+  /// </summary>
+  public static async IAsyncEnumerable<JsonPathMatch> ExtractAllMatchesWithPathsAsync(Stream stream, List<JsonPathSegment> segments, StreamHead head)
   {
-    var origin = stream.Position;
+    var origin = stream.CanSeek ? stream.Position : -1;
     try
     {
-      var rootKind = GetRootContainerKind(stream);
-      if (rootKind == RootContainerKind.Array)
+      using var effectiveStream = head.HeadBytes is { Length: > 0 }
+        ? CreateHeadPrependedStream(head.HeadBytes, stream)
+        : null;
+
+      var targetStream = effectiveStream ?? stream;
+
+      if (head.RootKind == RootContainerKind.Array)
       {
-        await foreach (var match in ExtractAllArrayRootMatchesWithPathsAsync(stream, segments))
+        await foreach (var match in ExtractAllArrayRootMatchesWithPathsAsync(targetStream, segments))
           yield return match;
       }
-      else if (rootKind == RootContainerKind.Object)
+      else if (head.RootKind == RootContainerKind.Object)
       {
-        await foreach (var match in ExtractAllObjectRootMatchesWithPathsAsync(stream, segments))
+        await foreach (var match in ExtractAllObjectRootMatchesWithPathsAsync(targetStream, segments))
           yield return match;
       }
     }
     finally
     {
-      stream.Position = origin;
+      if (origin >= 0)
+        stream.Position = origin;
     }
+  }
+
+  /// <summary>
+  /// Creates a stream that yields <paramref name="headBytes"/> first, then the remainder of <paramref name="innerStream"/>.
+  /// </summary>
+  private static Stream CreateHeadPrependedStream(byte[] headBytes, Stream innerStream)
+  {
+    var combined = new MemoryStream(headBytes.Length + (innerStream.CanSeek ? (int)(innerStream.Length - innerStream.Position) : 0));
+    combined.Write(headBytes, 0, headBytes.Length);
+    innerStream.CopyTo(combined);
+    combined.Position = 0;
+    return combined;
   }
 
   private static async Task<JsonNode?> ExtractFirstArrayRootMatchAsync(Stream stream, List<JsonPathSegment> segments)
@@ -865,76 +930,140 @@ internal static class JsonPathStreamingMatcher
 
   private static async Task<byte[]> ReadToEndAsync(Stream stream)
   {
-    if (stream.CanSeek)
-    {
-      var remainingLength = stream.Length - stream.Position;
-      if (remainingLength <= 0)
-        return Array.Empty<byte>();
-
-      if (remainingLength <= int.MaxValue)
-      {
-        var buffer = new byte[(int)remainingLength];
-        var totalRead = 0;
-
-        while (totalRead < buffer.Length)
-        {
-          var bytesRead = await stream.ReadAsync(buffer.AsMemory(totalRead));
-          if (bytesRead == 0)
-            break;
-
-          totalRead += bytesRead;
-        }
-
-        if (totalRead == buffer.Length)
-          return buffer;
-
-        Array.Resize(ref buffer, totalRead);
-        return buffer;
-      }
-    }
-
-    using var copy = new MemoryStream();
-    await stream.CopyToAsync(copy);
-    return copy.ToArray();
+    return await ReadToEndAsync(stream, head: null);
   }
 
-  private static RootContainerKind GetRootContainerKind(Stream stream)
+  private static async Task<byte[]> ReadToEndAsync(Stream stream, byte[]? head)
   {
-    if (!TryPeekRootToken(stream, out var token))
-      return RootContainerKind.None;
+    byte[]? remaining = null;
 
-    return token switch
-    {
-      '[' => RootContainerKind.Array,
-      '{' => RootContainerKind.Object,
-      _ => RootContainerKind.None
-    };
-  }
-
-  private static bool TryPeekRootToken(Stream stream, out char token)
-  {
-    token = default;
-
-    var origin = stream.Position;
     try
     {
-      using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, bufferSize: 1024, leaveOpen: true);
-      while (!reader.EndOfStream)
+      if (stream.CanSeek)
       {
-        var ch = (char)reader.Read();
-        if (char.IsWhiteSpace(ch))
-          continue;
+        var remainingLength = stream.Length - stream.Position;
+        if (remainingLength <= 0)
+          return head ?? Array.Empty<byte>();
 
-        token = ch;
-        return true;
+        if (remainingLength <= int.MaxValue)
+        {
+          remaining = new byte[(int)remainingLength];
+          var totalRead = 0;
+
+          while (totalRead < remaining.Length)
+          {
+            var bytesRead = await stream.ReadAsync(remaining.AsMemory(totalRead));
+            if (bytesRead == 0)
+              break;
+
+            totalRead += bytesRead;
+          }
+
+          if (totalRead != remaining.Length)
+            Array.Resize(ref remaining, totalRead);
+        }
       }
 
-      return false;
+      if (remaining is null)
+      {
+        using var copy = new MemoryStream();
+        await stream.CopyToAsync(copy);
+        remaining = copy.ToArray();
+      }
     }
-    finally
+    catch
     {
-      stream.Position = origin;
+      // If we allocated 'remaining' and concatenation fails, let the caller handle it
+      throw;
     }
+
+    if (head is null || head.Length == 0)
+      return remaining;
+
+    var result = new byte[head.Length + remaining.Length];
+    Array.Copy(head, 0, result, 0, head.Length);
+    Array.Copy(remaining, 0, result, head.Length, remaining.Length);
+    return result;
+  }
+
+  /// <summary>
+  /// Peeks the stream to determine the root container kind and captures any bytes consumed.
+  /// For seekable streams, restores position and returns an empty head-bytes array.
+  /// For non-seekable streams, returns the consumed bytes so the caller can prepend them.
+  /// </summary>
+  private static StreamHead PeekStreamHead(Stream stream)
+  {
+    const int maxPeekBytes = 64;
+
+    if (stream.CanSeek)
+    {
+      var origin = stream.Position;
+      try
+      {
+        var kind = PeekRootKindFromStream(stream, maxPeekBytes);
+        return new StreamHead { RootKind = kind, HeadBytes = null };
+      }
+      finally
+      {
+        stream.Position = origin;
+      }
+    }
+
+    // Non-seekable: consume bytes and return them as head
+    var headBuffer = new byte[maxPeekBytes];
+    var totalRead = 0;
+    var bytesRead = stream.Read(headBuffer, 0, maxPeekBytes);
+    if (bytesRead == 0)
+      return new StreamHead { RootKind = RootContainerKind.None, HeadBytes = Array.Empty<byte>() };
+
+    totalRead = bytesRead;
+
+    var detectedKind = PeekRootKindFromBytes(headBuffer.AsSpan(0, totalRead));
+    if (totalRead == headBuffer.Length)
+      return new StreamHead { RootKind = detectedKind, HeadBytes = headBuffer };
+
+    // Trim to actual read size
+    var trimmed = new byte[totalRead];
+    Array.Copy(headBuffer, trimmed, totalRead);
+    return new StreamHead { RootKind = detectedKind, HeadBytes = trimmed };
+  }
+
+  private static RootContainerKind PeekRootKindFromStream(Stream stream, int maxBytes)
+  {
+    Span<byte> buffer = stackalloc byte[maxBytes];
+    var bytesRead = stream.Read(buffer);
+    if (bytesRead == 0)
+      return RootContainerKind.None;
+
+    return PeekRootKindFromBytes(buffer[..bytesRead]);
+  }
+
+  private static RootContainerKind PeekRootKindFromBytes(ReadOnlySpan<byte> bytes)
+  {
+    for (var i = 0; i < bytes.Length; i++)
+    {
+      var b = bytes[i];
+
+      // Skip UTF-8 BOM
+      if (i == 0 && b == 0xEF && bytes.Length > 2 && bytes[1] == 0xBB && bytes[2] == 0xBF)
+      {
+        i += 2;
+        continue;
+      }
+
+      // Skip whitespace (space, tab, newline, carriage return)
+      if (b is 0x20 or 0x09 or 0x0A or 0x0D)
+        continue;
+
+      return b switch
+      {
+        0x5B => RootContainerKind.Array,  // '['
+        0x7B => RootContainerKind.Object, // '{'
+        _ => RootContainerKind.None
+      };
+    }
+
+    return RootContainerKind.None;
   }
 
   private static string AppendPropertyPath(string parentPath, string propertyName)

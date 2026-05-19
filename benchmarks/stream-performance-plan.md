@@ -1,344 +1,309 @@
-# Stream Performance Improvement Plan
+# Library Evolution Plan: Memory, Performance & Large-File Streaming
 
 **Date:** 2026-05-19  
-**Based on:** `benchmark-results-v1.md`  
-**Goal:** Reduce Stream latency by 5–10× and memory by 3–5× for common paths
+**Primary goal:** Make JsonPathPlus safe and efficient for JSON payloads from **1 KB to 1 GB**, with a focus on minimizing peak memory and avoiding Out-Of-Memory conditions.
 
 ---
 
-## Status Update — Iterations 1-2
+## Library Core Requirements (Non-Negotiable)
 
-### Completed work
-
-1. Eliminated the extra raw-text reparse on the object-root stream path for simple selectors.
-2. Extended the same `JsonElement` fast path to `ExtractAllJsonMatchesWithPathsAsync` for object-root selectors.
-3. Applied a `JsonElement`-based fast path to root-array streaming for simple wildcard/index/range/union selectors while preserving the existing fallback for unsupported segment types.
-4. Avoided `GetRawText()` plus `JsonNode.Parse()` for final `string`, `bool`, and `null` matches by materializing those scalars directly.
-5. Removed the streaming-path `segments.Skip(1).ToList()` copies by switching core matcher entry points to segment start-index traversal.
-6. Replaced the root-array simple-selector `DeserializeAsyncEnumerable<JsonElement>` path with a `Utf8JsonReader` scan over the stream bytes and on-demand `JsonDocument.ParseValue` for matched elements.
-
-### Measured outcome so far
-
-1. Object-root simple and range selectors remain materially improved versus baseline, with roughly 38–50% lower mean time and 75–86% lower allocation.
-2. Root-array wildcard is now materially better than baseline at both latency and allocation, with the largest gain coming from the reader-based root-array scan.
-3. Root-array first-index is no longer flat versus baseline; the reader-based scan moved it into the same latency class as the optimized object-root simple-property path.
-4. Start-index traversal produced small additional allocation reductions across the measured stream cases, but the reader-based root-array scan was the first change that materially shifted root-array first-index latency.
-
-### Revised next priorities
-
-1. Add dedicated `WithPaths` benchmarks for object-root and root-array streaming so the new path-aware fast path has its own baseline.
-2. Reduce the remaining `MaterializeElement` cost for numeric scalars if that can be done without changing JSON semantics.
-3. Revisit root-array filter and other unsupported first-segment shapes now that the simple root-array path has a substantially better baseline.
-4. Consider matcher-level list pooling only if the next benchmark pass shows traversal allocations still dominating after the benchmark coverage above is expanded.
+1. **Payload range: 1 KB → 1 GB.** The library must not OOM on a 1 GB JSON stream when the query is structurally streamable (simple first-segment match over root array/object). Graceful degradation (exception with clear message) is acceptable for queries requiring full-document materialization beyond a configurable budget.
+2. **Streaming must not buffer the entire document.** The `ReadToEndAsync` pattern that copies the full stream into a `byte[]` must be eliminated from all streaming paths. Streaming code must operate over a bounded window of the input.
+3. **Non-seekable streams must be supported.** `CanUseStreaming` currently requires `stream.CanSeek`. The library must detect root container kind and apply streaming without requiring seekability (e.g., from network streams, gzip wrappers, pipes).
+4. **`FullParseMaxBytes` must guard ALL materialization paths**, not just the full-parse fallback. If a query would materialize more than the budget, it must fail with a clear diagnostic.
+5. **Return type must support non-materialized results.** Today all APIs return materialized `JsonNode` / `JsonPathMatch`. For large subtrees, an option to return `JsonElement` (backed by a pooled buffer) or a streaming result must exist so callers can avoid full subtree materialization.
+6. **Existing API surface preserved.** All current `StreamJsonExtractionExtensions` signatures remain functional. New capability added via new overloads or options flags, not breaking changes.
 
 ---
 
-## 1. Root Cause Analysis
+## Scope and principles
 
-### Benchmark data tells the story
+1. Optimize memory first; treat latency gains as secondary benefits.
+2. Preserve all public APIs in `StreamJsonExtractionExtensions`.
+3. Keep streaming fallback behavior correct for unsupported segment types.
+4. Require benchmark evidence for each change before broad rollout.
+5. All streaming paths must work with a bounded memory window, not a full-stream copy.
 
-| Benchmark | Mean | Allocated | GC Gen2/1k | What's happening |
-|---|---|---|---|---|
-| `Node_First_SimpleProperty` | **435 ns** | 1,040 B | 0 | Pre-parsed tree walk |
-| `String_First_SimpleProperty` | 30.1 μs | 26,640 B | 0 | One parse + tree walk |
-| `Stream_First_SimpleProperty` | **73.7 μs** | 54,616 B | 0 | Stream→full parse→tree walk |
-| `Stream_First_ArrayIndex` | 809.7 μs | 478,881 B | **Gen2: 71.3** | Full 1000-element parse |
-| `Stream_All_Wildcard` | 1,640 μs | 1,072,397 B | **Gen2: 70.3** | Worst case — full parse + materialize all |
+---
 
-**The gap:** Stream is **169× slower** than JsonNode for the same path. The parse step dominates.
+## Current memory hotspots (code-based)
 
-### What the code actually does for `$.items[0].name` (Stream)
+1. **Full-stream buffering (blocker for 1 GB).** All six streaming methods in `JsonPathStreamingMatcher` call `ReadToEndAsync`, which allocates `new byte[(int)remainingLength]` — a 1 GB contiguous allocation for a 1 GB stream. This is the #1 OOM risk.
+2. **`CanUseStreaming` requires `stream.CanSeek`.** Non-seekable streams always fall through to full parse, which materializes the entire document as `JsonNode`.
+3. **`FullParseMaxBytes` only guards the full-parse fallback.** The streaming path itself has no memory budget enforcement.
+4. **Return type forces materialization.** All public APIs return `JsonNode` / `JsonPathMatch`, which must be a fully materialized tree. For a 500 MB subtree matched by a query, this is unavoidable OOM.
+5. Object-root fallback still materializes `JsonNode` via `JsonNode.Parse(propertyDocument.RootElement.GetRawText())` in `JsonPathStreamingMatcher`.
+6. Matcher traversal allocates new lists on each segment step (`FindSegmentMatches`, `FindSegmentMatchesWithPaths`) in `JsonPathMatcher`.
+7. Filter evaluation allocates for expression parsing (`Trim`, recursive substring slices, `Split('.')`) in `JsonPathFilterEvaluator`.
+8. Parser allocates intermediate strings/arrays for unions and projections (`ToString().Split(...)`) in `JsonPathParser`.
+9. Root container detection is repeated (`CanUseStreaming` plus extract method path selection) in `JsonPathStreamingMatcher`, causing extra stream peeks.
+
+---
+
+## Large-File Streaming Architecture (New)
+
+This section describes the architectural shift needed to satisfy the core requirements for 1 GB+ payloads, independent of the smaller memory optimization phases below.
+
+### The root problem
+
+Every streaming path today does:
 
 ```
-ExtractFirstJsonMatchAsync(stream, "$.items[0].name")
-  → ParseSegments → [Property("items"), ArrayIndex(0), Property("name")]
-  → CanUseStreaming? Root is '{' (object), segments[0] is Property("items")
-    → Object root + Property first segment → SHOULD return true? NO!
-    → Look at CanUseStreaming for Object root:
-      ✅ Property → true
-      ✅ Wildcard → true  
-      ✅ PropertyUnion → true
-    → Wait, it SHOULD return true for `$.items[0].name`!
+Stream → ReadToEndAsync → byte[] (ENTIRE document in memory) → Utf8JsonReader scan
 ```
 
-**Wait — re-examining the code:**
+This is not "streaming" — it's "buffered-then-scanned." For a 1 GB file, this requires 1 GB of contiguous memory before any matching begins.
 
-```csharp
-// In CanUseStreaming:
-RootContainerKind.Object => first.SegmentType switch
-{
-    Property => !string.IsNullOrWhiteSpace(first.PropertyName),  // ✅ "items"
-    Wildcard => true,
-    PropertyUnion => first.PropertyUnionNames is { Length: > 0 },
-    _ => false
-}
+### Required architecture
+
+```
+Stream → Bounded Buffer Window (e.g., 64 KB pooled) → Utf8JsonReader over buffer → match/yield/return
 ```
 
-So `CanUseStreaming` DOES return `true` for `$.items[0].name` with a root object. The streaming path IS used.
+Key design decisions:
 
-**But then what happens in `ExtractFirstObjectRootMatch`?**
+| Decision | Approach |
+|---|---|
+| **Buffer management** | `ArrayPool<byte>` backed; refill window when reader advances past buffer boundary; never hold the full stream in memory |
+| **Root container detection** | Read first few bytes from stream (no `StreamReader`, no seek required); peek the first non-whitespace UTF-8 byte for `[` or `{` |
+| **Seekless streaming** | `CanUseStreaming` drops the `CanSeek` requirement; root kind detected from initial read; position tracking is local to the buffered window |
+| **Element skipping** | `Utf8JsonReader.Skip()` already handles this for unmatched elements — no materialization needed |
+| **Result return** | New public API surface: `ExtractFirstJsonElementAsync` / `ExtractAllJsonElementsAsync` returning `JsonElement` backed by the caller-owned buffer window. Existing `JsonNode`-returning APIs continue to work for small payloads |
+| **Memory budget** | `FullParseMaxBytes` renamed/re-scoped to `MaxMaterializationBytes`; enforced at every point where a subtree would be materialized, including matched elements in the streaming path |
+| **Fallback to full parse** | Only allowed when `stream.Length <= MaxMaterializationBytes`; otherwise throws with a clear message recommending a streamable selector |
 
-```csharp
-// It reads the ENTIRE stream to a byte[]:
-var bytes = await ReadToEndAsync(stream);  // ← MEMORY COPY!
+### Return-type strategy
 
-// Then walks the object with Utf8JsonReader
-// For each matching property, it does:
-using var propertyDocument = JsonDocument.ParseValue(ref reader);     // ← PARSE #1
-var propertyNode = JsonNode.Parse(propertyDocument.RootElement.GetRawText()); // ← PARSE #2!
-var match = JsonPathExtractionCore.FindFirstMatch(propertyNode, remainingSegments);
-```
-
-**THERE IT IS:** The object-root streaming path:
-1. Copies the ENTIRE stream to `byte[]` (ReadToEndAsync)
-2. For `items` property, parses the value TWICE (JsonDocument.ParseValue + JsonNode.Parse)  
-3. The `items` value is a 100-element array → 54KB of raw JSON → parsed fully into a JsonArray tree
-
-**And for the wildcard benchmarks** (e.g., `$.items[*].name`):
-- Root is `{`, so object streaming path is used
-- Finds `items` property
-- Double-parses the 1000-element array into a full JsonArray
-- Then `JsonPathMatcher.FindMatches` walks all 1000 items to extract `name`
-
-### The true bottleneck summary
-
-| Problem | Location | Severity |
+| API family | Returns | Use case |
 |---|---|---|
-| **`ReadToEndAsync` copies entire stream** | `ExtractFirstObjectRootMatch` | 🔴 Critical — double memory |
-| **Double parse** (`JsonDocument` → `JsonNode`) | `ExtractFirstObjectRootMatch` | 🔴 Critical — 2× parse time |
-| **Full nested array materialization** | `JsonPathExtractionCore.FindFirstMatch` on full `JsonArray` | 🔴 Critical — wildcard/range on large arrays |
-| **`segments.Skip(1).ToList()` allocation** | Every streaming method | 🟡 Medium — per-call alloc |
-| **`JsonPathMatcher.FindMatches` creates intermediate lists** | `FindSegmentMatches` | 🟡 Medium — segment-level alloc |
-| **`DeserializeAsyncEnumerable<JsonNode>` is heavy** | Root-array path | 🟡 Medium — full deserialization per element |
-| **`GetRootContainerKind` creates a `StreamReader`** | Every `CanUseStreaming` call | 🟢 Minor — but called multiple times |
+| `ExtractFirstJsonMatchAsync` (existing) | `JsonNode?` | Small payloads, backward compat |
+| `ExtractAllJsonMatchesAsync` (existing) | `IAsyncEnumerable<JsonNode?>` | Small payloads, backward compat |
+| **New:** `ExtractFirstJsonElementAsync` | `JsonElement?` with `IDisposable` owner | Large payloads, caller disposes buffer |
+| **New:** `ExtractAllJsonElementsAsync` | `IAsyncEnumerable<JsonElement>` with pooled lifetime | Large payloads, caller iterates within buffer window |
+| **New:** `CopyFirstJsonMatchAsync` | `Task` + `Stream` output | Large payloads, writes matched subtree directly to output stream |
+
+### Migration path (no breaking changes)
+
+1. Add `JsonElement`-returning overloads as new public methods.
+2. Make existing `JsonNode`-returning overloads delegate to `JsonElement` overloads + `JsonNode.Parse` for small payloads.
+3. Add `MaxMaterializationBytes` option that gates all materialization.
+4. Deprecate `FullParseMaxBytes` in favor of the new option (keep it as an alias).
 
 ---
 
-## 2. Improvement Plan (Prioritized)
-
-### 🔴 Priority 1: Eliminate `ReadToEndAsync` in object-root path
-
-**Today:**
-```csharp
-var bytes = await ReadToEndAsync(stream);  // Copies entire stream to byte[]
-```
-**Problem:** For a 100-item JSON (~5KB), this doubles memory. For 1000 items (~50KB), it's 50KB × 2 = 100KB.
-
-**Fix:** Process directly from the stream using pipe-based `Utf8JsonReader` or `System.IO.Pipelines`.
-Keep the stream open, read chunks, and match lazily.
-
-**Expected impact:** 
-- Memory: **−50%** (no duplicate byte[])
-- Speed: **−10–15%** (no copy overhead)
-
-**Implementation approach:**
-```csharp
-// Instead of ReadToEndAsync, use a pooled buffer:
-byte[] buffer = ArrayPool<byte>.Shared.Rent((int)stream.Length);
-try {
-    await stream.ReadExactlyAsync(buffer, 0, (int)stream.Length);
-    // Use Utf8JsonReader on the buffer directly
-} finally {
-    ArrayPool<byte>.Shared.Return(buffer);
-}
-```
-Or better: stream directly via `PipeReader`.
+## Memory-first roadmap (small-to-medium payloads)
 
 ---
 
-### 🔴 Priority 2: Kill the double parse — pass JsonElement, not JsonNode
+## Baseline metrics to beat
 
-**Today (in object-root path):**
-```csharp
-using var propertyDocument = JsonDocument.ParseValue(ref reader);     // Parse #1
-var propertyNode = JsonNode.Parse(propertyDocument.RootElement.GetRawText()); // Parse #2 + alloc
-var match = JsonPathExtractionCore.FindFirstMatch(propertyNode, remainingSegments);
-```
+Use `benchmarks/benchmark-results-v1.md` and latest BenchmarkDotNet report snapshots as baseline for allocation deltas.
 
-**Problem:** `JsonDocument.ParseValue` parses the JSON value. Then `GetRawText()` serializes it back to string. Then `JsonNode.Parse` parses it AGAIN. This is 2× parse + string allocation.
+Priority memory baselines:
 
-**Fix:** Create a `JsonElement`-based matching path. `JsonElement` is the lightweight parsed representation from `JsonDocument`. Create an overload of `JsonPathExtractionCore.FindFirstMatch` that accepts `JsonElement`.
+1. `Stream_All_Wildcard`: ~1.07 MB allocated/op.
+2. `Stream_First_Wildcard`: ~1.06 MB allocated/op.
+3. `Stream_All_Range`: ~485 KB allocated/op.
+4. `Stream_First_ArrayIndex`: ~479 KB allocated/op.
 
-```csharp
-using var propertyDocument = JsonDocument.ParseValue(ref reader);
-var match = JsonPathExtractionCore.FindFirstMatchElement(
-    propertyDocument.RootElement, remainingSegments);
-```
+Success criteria for memory track:
 
-**Expected impact:**
-- Speed: **−30–40%** for object-root paths (one parse instead of two)
-- Memory: **−string allocation** (~5–50KB per call)
-
-**Note:** Requires a parallel `JsonElement`-based matching infrastructure alongside the existing `JsonNode` one. Can start with `FindFirstMatch` and `FindAllMatches`.
+1. Cut allocations by at least 40% on the four scenarios above.
+2. Remove Gen2 collections for wildcard/range stream benchmarks.
+3. Keep correctness parity with existing tests.
 
 ---
 
-### 🔴 Priority 3: Lazy matching — don't materialize full nested arrays
+## Memory-first roadmap
 
-**Today:**
-When the object-root streaming path matches the `items` property, it parses the ENTIRE array into a `JsonArray`, then walks it with `JsonPathMatcher.FindMatches`.
+### Phase 1: Remove avoidable buffering and reparsing
 
-**Problem:** `Stream_All_Wildcard` on `$.items[*].id`:
-1. Parses full 1000-element array → 1,072,397 B allocation
-2. Walks all 1000 items to extract `id`
-3. Returns all 1000 matches
-4. Gen2 GC triggers
+#### 1.1 Replace unconditional `ReadToEndAsync` with pooled buffering
 
-**Fix:** For `*.items[0].name` (single index), stop after the parse and use direct array access instead of full tree walk. For `*.items[*].id` with subsequent property access, parse the array lazily — deserialize one element at a time from the streaming path, extract the `id` property, yield it, and discard.
+Target files:
 
-**Implementation:**
-```csharp
-// After finding the 'items' property value, instead of:
-var propertyNode = JsonNode.Parse(rawText); // Materializes ALL 1000 items
+1. `JsonPathStreamingMatcher.cs`
 
-// Do:
-using var doc = JsonDocument.Parse(rawText);
-var itemsArray = doc.RootElement;
-foreach (var item in itemsArray.EnumerateArray())
-{
-    if (item.TryGetProperty("id", out var idElement))
-        yield return JsonNode.Parse(idElement.GetRawText()); // Only parse 'id' values
-}
-```
+Actions:
 
-For `ExtractFirst` with index, don't enumerate all — jump to the index:
-```csharp
-var item = itemsArray[500]; // Direct access via JsonElement indexer
-if (item.TryGetProperty("name", out var nameElement))
-    return JsonNode.Parse(nameElement.GetRawText());
-```
+1. Replace `ReadToEndAsync` usages with an `ArrayPool<byte>`-backed read helper.
+2. Keep `Utf8JsonReader`-based flow, but return pooled buffer in `finally`.
+3. Avoid creating extra `byte[]` copies when stream length is known.
 
-**Expected impact:**
-- `Stream_First_ArrayIndex`: 809.7 μs → **~50 μs** (16× faster), 478,881 B → **~5,000 B** (96× less)
-- `Stream_All_Wildcard`: 1,640 μs → **~200 μs** (8× faster), 1,072,397 B → **~100,000 B** (10× less)
-- **Eliminates Gen2 GC** on wildcard benchmarks
+Expected memory impact:
+
+1. Lower temporary buffer churn on hot stream paths.
+2. Smaller LOH pressure on larger payloads.
+
+#### 1.2 Eliminate object-root fallback raw-text roundtrip when possible
+
+Target files:
+
+1. `JsonPathStreamingMatcher.cs`
+2. `JsonPathExtractionCore.cs` (new internal entry points if needed)
+
+Actions:
+
+1. Expand `JsonElement` matcher support so more segment types stay in element pipeline.
+2. Reduce reliance on fallback that calls `GetRawText` + `JsonNode.Parse`.
+3. Keep fallback only for truly unsupported segment families.
+
+Expected memory impact:
+
+1. Lower string allocations and parser allocations on object-root stream selectors.
 
 ---
 
-### 🟡 Priority 4: Eliminate `segments.Skip(1).ToList()` in streaming methods
+### Phase 2: Reduce traversal allocations in matching
 
-**Today:** Every streaming method does:
-```csharp
-var remainingSegments = segments.Skip(1).ToList(); // Allocates a new list
-```
+#### 2.1 Rework segment traversal to reuse buffers
 
-**Fix:** Pass segments as `ReadOnlySpan<JsonPathSegment>` or use a `startIndex` parameter.
+Target files:
 
-```csharp
-// Instead of:
-var remainingSegments = segments.Skip(1).ToList();
-JsonPathExtractionCore.FindFirstMatch(item, remainingSegments);
+1. `JsonPathMatcher.cs`
 
-// Use:
-JsonPathExtractionCore.FindFirstMatch(item, segments, startIndex: 1);
-```
+Actions:
 
-**Expected impact:** Eliminates ~6 list allocations per streaming call (one for each of the 6 streaming methods). Small but cumulative win.
+1. Replace per-segment new lists with two reusable buffers (`current`, `next`) and swap/clear.
+2. Add capacity hints from current set size.
+3. Mirror this strategy for path-aware traversal (`MatchContext`).
 
----
+Expected memory impact:
 
-### 🟡 Priority 5: Pool intermediate lists in `JsonPathMatcher`
+1. Fewer short-lived list allocations per query.
+2. Reduced Gen0 churn for deep or wildcard-heavy selectors.
 
-**Today:** `FindSegmentMatches` creates `new List<JsonNode?>()` for every segment transition.
+#### 2.2 Add first-match short-circuit traversal path ✅ **DONE**
 
-```csharp
-private static List<JsonNode?> FindSegmentMatches(IEnumerable<JsonNode?> current, JsonPathSegment segment)
-{
-    var results = new List<JsonNode?>(); // New list every time
-    foreach (var node in current) { ... }
-    return results;
-}
-```
+Target files:
 
-**Fix:** Pre-allocate with capacity hints and consider pooling.
+1. `JsonPathExtractionCore.cs`
+2. `JsonPathMatcher.cs`
 
-```csharp
-var results = new List<JsonNode?>(capacity: current is ICollection<JsonNode?> c ? c.Count : 4);
-```
+Actions:
 
-Or use `ArrayPool`-backed lists for hot paths.
+1. ✅ Introduced `TryFindFirstMatch` recursive traversal that exits as soon as one match is found.
+2. ✅ Routed `FindFirstMatch` in `JsonPathExtractionCore` through the new short-circuit path.
+3. ✅ Avoids building full match collections for `ExtractFirst...` APIs.
+4. ✅ Full segment-type coverage: Property, ArrayIndex, ArrayRange, ArrayUnion, PropertyUnion, Filter, ComputedIndex, Wildcard, RecursiveDescent, FieldProjection, FieldExclusion, FieldExistence, FieldCount.
 
-**Expected impact:** 10–15% allocation reduction in the matching layer.
+Validation: 240/240 `StreamJsonExtractionExtensionsTests` pass across net8.0, net9.0, net10.0.
 
 ---
 
-### 🟡 Priority 6: Use `JsonElement` in root-array streaming path
+### Phase 3: Cut parser and filter allocation overhead
 
-**Today:** `DeserializeAsyncEnumerable<JsonNode>` deserializes each array element into a full `JsonNode` tree.
+#### 3.1 Span-first parsing for unions/projections
 
-**Fix:** Use `JsonSerializer.DeserializeAsyncEnumerable` with a custom approach, or parse the raw byte range for each element using `JsonDocument.Parse`.
+Target files:
 
-Actually, `DeserializeAsyncEnumerable<JsonElement>` doesn't exist in the same way. Alternative: Use `Utf8JsonReader` to find element boundaries, then `JsonDocument.Parse` each element as needed.
+1. `JsonPathParser.cs`
 
-For index-based access (e.g., `$[250].name`), skip to the 250th element without parsing the first 249.
+Actions:
 
-**Expected impact:**
-- `Stream_RootArray_First_Index`: 304.7 μs → **~100 μs** (3× faster)
-- `Stream_RootArray_All_Wildcard`: 821.3 μs → **~400 μs** (2× faster), 587,985 B → **~200,000 B**
+1. Replace `ToString().Split(...)` patterns with span tokenization loops.
+2. Allocate arrays only once final token count is known.
+3. Keep validation rules unchanged.
 
----
+Expected memory impact:
 
-### 🟢 Priority 7: Reuse peek result — avoid double `GetRootContainerKind`
+1. Lower path-parse allocations for complex selectors.
 
-**Today:** `CanUseStreaming` calls `GetRootContainerKind(stream)`, then `ExtractFirstMatchAsync` calls it again.
+#### 3.2 Filter evaluator expression cache and non-splitting path resolution
 
-**Fix:** Return the container kind from `CanUseStreaming` via an `out` parameter, or cache it.
+Target files:
 
-**Expected impact:** Eliminates one stream seek + StreamReader creation per call. ~1–5 μs savings.
+1. `JsonPathFilterEvaluator.cs`
 
----
+Actions:
 
-### 🟢 Priority 8: Replace `StreamReader` peek with byte-level peek
+1. Cache parsed filter AST/token plan for repeated expressions.
+2. Replace `path.Split('.')` with span scanning.
+3. Keep comparison semantics unchanged.
 
-**Today:** `TryPeekRootToken` creates a `StreamReader` to find the first non-whitespace character.
+Expected memory impact:
 
-**Fix:** Read a small buffer (e.g., 16 bytes) and scan for `[` or `{` without creating a `StreamReader`.
-
-```csharp
-Span<byte> buffer = stackalloc byte[16];
-int read = stream.Read(buffer);
-stream.Position = origin;
-for (int i = 0; i < read; i++) {
-    if (buffer[i] == '[' || buffer[i] == '{') return (char)buffer[i];
-    if (!char.IsWhiteSpace((char)buffer[i])) break; // Not JSON
-}
-```
-
-**Expected impact:** ~2–5 μs savings, zero allocation for peek.
+1. Significant improvement for repeated filter expressions across array items.
 
 ---
 
-## 3. Expected Cumulative Impact
+### Phase 4: Streaming decision and control-plane cleanup
 
-| Benchmark | Current Mean | Target Mean | Current Alloc | Target Alloc |
-|---|---|---|---|---|
-| `Stream_First_SimpleProperty` | 73.7 μs | **~15 μs** (5×) | 54,616 B | **~5,000 B** (11×) |
-| `Stream_First_ArrayIndex` | 809.7 μs | **~50 μs** (16×) | 478,881 B | **~5,000 B** (96×) |
-| `Stream_First_Wildcard` | 1,267 μs | **~200 μs** (6×) | 1,055,273 B | **~50,000 B** (21×) |
-| `Stream_All_Wildcard` | 1,640 μs | **~200 μs** (8×) | 1,072,397 B | **~100,000 B** (11×) |
-| `Stream_All_Range` | 866 μs | **~100 μs** (9×) | 485,105 B | **~30,000 B** (16×) |
-| `Stream_RootArray_First_Index` | 304.7 μs | **~100 μs** (3×) | 136,952 B | **~40,000 B** (3×) |
-| `Stream_RootArray_All_Wildcard` | 821.3 μs | **~400 μs** (2×) | 587,985 B | **~200,000 B** (3×) |
+Target files:
 
-**Gen2 GC on large arrays: Eliminated.**
+1. `JsonPathStreamingMatcher.cs`
+2. `StreamJsonExtractionExtensions.cs`
 
----
+Actions:
 
-## 4. Implementation Order
+1. Avoid duplicate root-kind probing by returning root kind from streaming eligibility check.
+2. Consolidate stream position restore logic in one place.
 
-| Step | Effort | Risk | Impact |
-|---|---|---|---|
-| 1. Lazy array matching (Priority 3) | Medium | Medium | 🏆 Highest |
-| 2. Eliminate double parse (Priority 2) | Medium-High | Medium | 🏆 Highest |
-| 3. Remove `ReadToEndAsync` (Priority 1) | Low-Medium | Low | High |
-| 4. Remove `Skip(1).ToList()` (Priority 4) | Low | Low | Medium |
-| 5. Pool intermediate lists (Priority 5) | Low | Low | Medium |
-| 6. JsonElement in root-array path (Priority 6) | Medium | Medium | Medium-High |
-| 7. Reuse peek result (Priority 7) | Low | Low | Low |
-| 8. Byte-level peek (Priority 8) | Low | Low | Low |
+Expected memory impact:
 
-**Recommended first sprint:** Steps 1 + 2 + 3 → target **5–16× speedup** on common Stream paths.
+1. Minor direct allocation gains, cleaner hot-path control flow.
 
 ---
 
-*This plan should be reviewed and updated after each implementation step based on re-benchmarking.*
+## Benchmark and validation plan
+
+1. Keep `[MemoryDiagnoser]` benchmark suite in `tests/JsonPathPlus.Benchmarks/JsonPathExtractionBenchmarks.cs` as primary guardrail.
+2. Add dedicated memory cases for:
+3. `ExtractAllJsonMatchesWithPathsAsync` (object root and root array).
+4. Filters over root arrays (to validate Phase 3 wins).
+5. Run targeted tests first:
+6. `tests/JsonPathPlus.Tests/JsonPathPlus.Tests.csproj --filter FullyQualifiedName~StreamJsonExtractionExtensionsTests`
+7. Re-run full benchmark comparison after each phase.
+
+---
+
+## Proposed implementation order (memory impact vs risk)
+
+### Completed
+1. ✅ Phase 2.2 first-match short-circuit (high impact, moderate risk)
+
+### Next — small-to-medium payload optimizations
+2. Phase 2.1 reusable matcher buffers (high impact, low-moderate risk)
+3. Phase 1.2 expand JsonElement support to reduce fallback (high impact, moderate risk)
+4. Phase 1.1 pooled buffering replacement (medium impact, low risk)
+5. Phase 3.2 filter cache and span path resolution (medium impact, moderate risk)
+6. Phase 3.1 parser span tokenization (medium impact, low-moderate risk)
+7. Phase 4 streaming decision cleanup (small impact, low risk)
+
+### Large-file streaming phases (dependency-ordered)
+8. ✅ **LFS-1: Seekless root detection.** Replaced `TryPeekRootToken` / `StreamReader` with raw byte peek via `PeekRootKindFromBytes`; removed `CanSeek` requirement from `CanUseStreaming`; introduced `StreamHead` type to flow peek results to extract methods. For non-seekable streams, head bytes are captured and prepended.  
+   **Validation:** 450/450 tests pass across net8.0/net9.0/net10.0; evaluator compiles.
+9. **LFS-2: Bounded-window `Utf8JsonReader`.** Replace `ReadToEndAsync` with a chunked reader that fills a pooled buffer, advances `Utf8JsonReader` over buffer windows, and refills when needed. This is the core architectural change.
+10. **LFS-3: `MaxMaterializationBytes` enforcement.** Gate every subtree materialization (matched elements, fallback paths) on the budget; throw with clear diagnostics when exceeded.
+11. **LFS-4: `JsonElement`-returning public API.** New `ExtractFirstJsonElementAsync` / `ExtractAllJsonElementsAsync` overloads; existing APIs delegate to these + `JsonNode.Parse` for small payloads.
+12. **LFS-5: `CopyFirstJsonMatchAsync`.** Stream-to-stream extraction for the largest subtrees — write matched subtree directly to caller's output stream without intermediate materialization.
+13. **LFS-6: 1 GB integration tests.** Add stress tests with generated 1 GB root-array/object payloads; verify bounded memory and correct results.
+
+---
+
+## Non-goals for this plan
+
+1. Public API signature changes.
+2. Semantics changes in JSONPath behavior.
+3. Premature use of complex custom allocators unless benchmark evidence justifies it.
+
+---
+
+## Exit criteria
+
+### Small-to-medium payload track
+1. Allocation reduction target reached for stream-heavy wildcard/range/index scenarios.
+2. No regression in `StreamJsonExtractionExtensionsTests`.
+3. Updated benchmark report committed with before/after allocation table.
+
+### Large-file streaming track
+1. `ReadToEndAsync` eliminated from all streaming paths.
+2. `CanUseStreaming` works without `stream.CanSeek`.
+3. 1 GB root-array query (`$[0].name`) completes with bounded memory (peak < 10 MB regardless of file size).
+4. 1 GB root-object query (`$.singleKey.subkey`) completes with bounded memory.
+5. `MaxMaterializationBytes` blocks materialization attempts beyond budget.
+6. New `JsonElement`-returning APIs exist and are tested.
+
+---
+
+This plan is intentionally memory-centric. If benchmark data shows a tradeoff between lower allocation and minor throughput variance, prefer lower allocation unless latency regression exceeds 10% on common paths.

@@ -9,6 +9,17 @@ internal static class JsonPathMatcher
   private const int RecursiveIndexMarker = int.MinValue;
   private readonly record struct MatchContext(JsonNode? Node, string Path);
 
+  public static JsonNode? FindFirstMatch(JsonNode? root, List<JsonPathSegment> segments)
+    => FindFirstMatch(root, segments, 0);
+
+  public static JsonNode? FindFirstMatch(JsonNode? root, List<JsonPathSegment> segments, int startIndex)
+  {
+    if (TryFindFirstMatch(root, segments, startIndex, out var firstMatch))
+      return firstMatch;
+
+    return null;
+  }
+
   public static List<JsonNode?> FindMatches(JsonNode? root, List<JsonPathSegment> segments)
     => FindMatches(root, segments, 0);
 
@@ -121,6 +132,353 @@ internal static class JsonPathMatcher
     }
 
     return results;
+  }
+
+  private static bool TryFindFirstMatch(
+    JsonNode? node,
+    List<JsonPathSegment> segments,
+    int segmentIndex,
+    out JsonNode? firstMatch)
+  {
+    if (segmentIndex >= segments.Count)
+    {
+      firstMatch = node;
+      return true;
+    }
+
+    var segment = segments[segmentIndex];
+    JsonNode? nestedMatch = null;
+
+    var completed = VisitSegmentMatches(node, segment, candidate =>
+    {
+      if (!TryFindFirstMatch(candidate, segments, segmentIndex + 1, out nestedMatch))
+        return true;
+
+      return false;
+    });
+
+    if (!completed)
+    {
+      firstMatch = nestedMatch;
+      return true;
+    }
+
+    firstMatch = null;
+    return false;
+  }
+
+  private static bool VisitSegmentMatches(JsonNode? node, JsonPathSegment segment, Func<JsonNode?, bool> visit)
+  {
+    switch (segment.SegmentType)
+    {
+      case JsonPathSegmentType.Property:
+        if (node is JsonObject propertyObject &&
+            propertyObject.TryGetPropertyValue(segment.PropertyName!, out var propertyValue) &&
+            !visit(propertyValue))
+        {
+          return false;
+        }
+
+        return true;
+
+      case JsonPathSegmentType.ArrayIndex:
+        if (node is not JsonArray arrayByIndex)
+          return true;
+
+        var effectiveIndex = segment.ArrayIndex < 0 ? arrayByIndex.Count + segment.ArrayIndex : segment.ArrayIndex;
+        if (effectiveIndex >= 0 && effectiveIndex < arrayByIndex.Count && !visit(arrayByIndex[effectiveIndex]))
+          return false;
+
+        return true;
+
+      case JsonPathSegmentType.ArrayRange:
+        if (node is not JsonArray arrayByRange)
+          return true;
+
+        var effectiveStart = segment.ArrayIndex < 0 ? arrayByRange.Count + segment.ArrayIndex : segment.ArrayIndex;
+        var effectiveEnd = segment.ArrayRangeEnd == int.MaxValue
+          ? arrayByRange.Count
+          : (segment.ArrayRangeEnd < 0 ? arrayByRange.Count + segment.ArrayRangeEnd : segment.ArrayRangeEnd);
+
+        effectiveStart = Math.Clamp(effectiveStart, 0, arrayByRange.Count);
+        effectiveEnd = Math.Clamp(effectiveEnd, 0, arrayByRange.Count);
+
+        for (var i = effectiveStart; i < effectiveEnd; i++)
+        {
+          if (!visit(arrayByRange[i]))
+            return false;
+        }
+
+        return true;
+
+      case JsonPathSegmentType.ArrayUnion:
+        if (node is not JsonArray arrayByUnion || segment.ArrayUnionIndices is null)
+          return true;
+
+        foreach (var unionIndex in segment.ArrayUnionIndices)
+        {
+          var effectiveUnionIndex = unionIndex < 0 ? arrayByUnion.Count + unionIndex : unionIndex;
+          if (effectiveUnionIndex >= 0 && effectiveUnionIndex < arrayByUnion.Count && !visit(arrayByUnion[effectiveUnionIndex]))
+            return false;
+        }
+
+        return true;
+
+      case JsonPathSegmentType.PropertyUnion:
+        if (node is not JsonObject objectByUnion || segment.PropertyUnionNames is null)
+          return true;
+
+        foreach (var propertyName in segment.PropertyUnionNames)
+        {
+          if (objectByUnion.TryGetPropertyValue(propertyName, out var unionValue) && !visit(unionValue))
+            return false;
+        }
+
+        return true;
+
+      case JsonPathSegmentType.Filter:
+        if (string.IsNullOrWhiteSpace(segment.FilterExpression))
+          return true;
+
+        if (node is JsonArray arrayByFilter)
+        {
+          foreach (var item in arrayByFilter)
+          {
+            if (JsonPathFilterEvaluator.Evaluate(item, segment.FilterExpression) && !visit(item))
+              return false;
+          }
+
+          return true;
+        }
+
+        if (node is JsonObject objectByFilter)
+        {
+          foreach (var property in objectByFilter)
+          {
+            if (JsonPathFilterEvaluator.Evaluate(property.Value, segment.FilterExpression) && !visit(property.Value))
+              return false;
+          }
+        }
+
+        return true;
+
+      case JsonPathSegmentType.ComputedIndex:
+        if (node is not JsonArray arrayByComputed || string.IsNullOrWhiteSpace(segment.ComputedIndexExpression))
+          return true;
+
+        if (!JsonPathComputedExpressionEvaluator.TryEvaluateIndex(arrayByComputed.Count, segment.ComputedIndexExpression, out var computedIndex))
+          return true;
+
+        var effectiveComputedIndex = computedIndex < 0 ? arrayByComputed.Count + computedIndex : computedIndex;
+        if (effectiveComputedIndex >= 0 && effectiveComputedIndex < arrayByComputed.Count && !visit(arrayByComputed[effectiveComputedIndex]))
+          return false;
+
+        return true;
+
+      case JsonPathSegmentType.Wildcard:
+        if (node is JsonArray arrayByWildcard)
+        {
+          foreach (var item in arrayByWildcard)
+          {
+            if (!visit(item))
+              return false;
+          }
+
+          return true;
+        }
+
+        if (node is JsonObject objectByWildcard)
+        {
+          foreach (var property in objectByWildcard)
+          {
+            if (!visit(property.Value))
+              return false;
+          }
+        }
+
+        return true;
+
+      case JsonPathSegmentType.RecursiveDescent:
+        return VisitRecursiveMatches(node, segment, visit);
+
+      case JsonPathSegmentType.FieldProjection:
+        if (segment.ProjectionFields is null || segment.ProjectionFields.Length == 0)
+          return true;
+
+        if (node is JsonArray arrayByProjection)
+        {
+          foreach (var item in arrayByProjection)
+          {
+            if (!TryProjectFields(item, segment.ProjectionFields, visit))
+              return false;
+          }
+
+          return true;
+        }
+
+        return TryProjectFields(node, segment.ProjectionFields, visit);
+
+      case JsonPathSegmentType.FieldExclusion:
+        if (segment.ProjectionFields is null || segment.ProjectionFields.Length == 0)
+          return true;
+
+        if (node is JsonArray arrayByExclusion)
+        {
+          foreach (var item in arrayByExclusion)
+          {
+            if (!TryExcludeFields(item, segment.ProjectionFields, visit))
+              return false;
+          }
+
+          return true;
+        }
+
+        return TryExcludeFields(node, segment.ProjectionFields, visit);
+
+      case JsonPathSegmentType.FieldExistence:
+        if (string.IsNullOrWhiteSpace(segment.PropertyName))
+          return true;
+
+        if (segment.PropertyName == "*")
+        {
+          var any = node switch
+          {
+            JsonObject obj => obj.Count > 0,
+            JsonArray array => array.Count > 0,
+            _ => false
+          };
+
+          return visit(JsonValue.Create(any));
+        }
+
+        var exists = node switch
+        {
+          JsonObject obj => obj.ContainsKey(segment.PropertyName),
+          JsonArray array => AnyItemContainsField(array, segment.PropertyName),
+          _ => false
+        };
+
+        return visit(JsonValue.Create(exists));
+
+      case JsonPathSegmentType.FieldCount:
+        if (string.IsNullOrWhiteSpace(segment.PropertyName))
+          return true;
+
+        if (segment.PropertyName == "*")
+        {
+          var anyCount = node switch
+          {
+            JsonObject obj => obj.Count,
+            JsonArray array => array.Count,
+            _ => 0
+          };
+
+          return visit(JsonValue.Create(anyCount));
+        }
+
+        var count = node switch
+        {
+          JsonObject obj => obj.ContainsKey(segment.PropertyName) ? 1 : 0,
+          JsonArray array => CountItemsWithField(array, segment.PropertyName),
+          _ => 0
+        };
+
+        return visit(JsonValue.Create(count));
+
+      default:
+        return true;
+    }
+  }
+
+  private static bool VisitRecursiveMatches(JsonNode? node, JsonPathSegment segment, Func<JsonNode?, bool> visit)
+  {
+    if (node is JsonObject obj)
+    {
+      foreach (var property in obj)
+      {
+        if (segment.PropertyName == "*" ||
+            (segment.PropertyName != null && property.Key == segment.PropertyName))
+        {
+          if (!visit(property.Value))
+            return false;
+        }
+
+        if (property.Value is not null && !VisitRecursiveMatches(property.Value, segment, visit))
+          return false;
+      }
+
+      return true;
+    }
+
+    if (node is not JsonArray array)
+      return true;
+
+    if (segment.PropertyName == null)
+    {
+      if (segment.ArrayRangeEnd == RecursiveIndexMarker)
+      {
+        var recursiveIndex = segment.ArrayIndex < 0 ? array.Count + segment.ArrayIndex : segment.ArrayIndex;
+        if (recursiveIndex >= 0 && recursiveIndex < array.Count && !visit(array[recursiveIndex]))
+          return false;
+      }
+      else
+      {
+        var recursiveStart = segment.ArrayIndex < 0 ? array.Count + segment.ArrayIndex : segment.ArrayIndex;
+        var recursiveEnd = segment.ArrayRangeEnd == int.MaxValue
+          ? array.Count
+          : (segment.ArrayRangeEnd < 0 ? array.Count + segment.ArrayRangeEnd : segment.ArrayRangeEnd);
+
+        recursiveStart = Math.Clamp(recursiveStart, 0, array.Count);
+        recursiveEnd = Math.Clamp(recursiveEnd, 0, array.Count);
+
+        for (var i = recursiveStart; i < recursiveEnd; i++)
+        {
+          if (!visit(array[i]))
+            return false;
+        }
+      }
+    }
+
+    foreach (var item in array)
+    {
+      if (item is not null && !VisitRecursiveMatches(item, segment, visit))
+        return false;
+    }
+
+    return true;
+  }
+
+  private static bool TryProjectFields(JsonNode? node, string[] fields, Func<JsonNode?, bool> visit)
+  {
+    if (node is not JsonObject obj)
+      return true;
+
+    var projectedObject = new JsonObject();
+
+    foreach (var field in fields)
+    {
+      if (obj.TryGetPropertyValue(field, out var value))
+        projectedObject[field] = value?.DeepClone();
+    }
+
+    return visit(projectedObject);
+  }
+
+  private static bool TryExcludeFields(JsonNode? node, string[] fields, Func<JsonNode?, bool> visit)
+  {
+    if (node is not JsonObject obj)
+      return true;
+
+    var excludedObject = new JsonObject();
+    var excludeSet = new HashSet<string>(fields);
+
+    foreach (var prop in obj)
+    {
+      if (!excludeSet.Contains(prop.Key))
+        excludedObject[prop.Key] = prop.Value?.DeepClone();
+    }
+
+    return visit(excludedObject);
   }
 
   private static List<MatchContext> FindSegmentMatchesWithPaths(

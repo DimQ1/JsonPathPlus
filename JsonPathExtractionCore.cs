@@ -18,8 +18,7 @@ internal static class JsonPathExtractionCore
     if (startIndex >= segments.Count)
       return root;
 
-    var matches = JsonPathMatcher.FindMatches(root, segments, startIndex);
-    return matches.Count > 0 ? matches[0] : null;
+    return JsonPathMatcher.FindFirstMatch(root, segments, startIndex);
   }
 
   public static IEnumerable<JsonNode?> FindAllMatches(JsonNode? root, List<JsonPathSegment> segments)

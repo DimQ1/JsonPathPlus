@@ -122,7 +122,10 @@ internal static class JsonPathStreamingMatcher
     const int remainingSegmentStartIndex = 1;
 
     if (CanUseElementArrayStreaming(segments, remainingSegmentStartIndex))
-      return await ExtractFirstArrayRootElementMatchAsync(stream, firstSegment, segments, remainingSegmentStartIndex);
+    {
+      var bytes = await ReadToEndAsync(stream);
+      return ExtractFirstArrayRootElementMatch(bytes, firstSegment, segments, remainingSegmentStartIndex);
+    }
 
     var index = 0;
 
@@ -151,7 +154,8 @@ internal static class JsonPathStreamingMatcher
 
     if (CanUseElementArrayStreaming(segments, remainingSegmentStartIndex))
     {
-      await foreach (var match in ExtractAllArrayRootElementMatchesAsync(stream, firstSegment, segments, remainingSegmentStartIndex))
+      var bytes = await ReadToEndAsync(stream);
+      foreach (var match in CollectAllArrayRootElementMatches(bytes, firstSegment, segments, remainingSegmentStartIndex))
         yield return match;
 
       yield break;
@@ -178,7 +182,8 @@ internal static class JsonPathStreamingMatcher
 
     if (CanUseElementArrayStreaming(segments, remainingSegmentStartIndex))
     {
-      await foreach (var match in ExtractAllArrayRootElementMatchesWithPathsAsync(stream, firstSegment, segments, remainingSegmentStartIndex))
+      var bytes = await ReadToEndAsync(stream);
+      foreach (var match in CollectAllArrayRootElementMatchesWithPaths(bytes, firstSegment, segments, remainingSegmentStartIndex))
         yield return match;
 
       yield break;
@@ -199,21 +204,32 @@ internal static class JsonPathStreamingMatcher
     }
   }
 
-  private static async Task<JsonNode?> ExtractFirstArrayRootElementMatchAsync(
-    Stream stream,
+  private static JsonNode? ExtractFirstArrayRootElementMatch(
+    byte[] bytes,
     JsonPathSegment firstSegment,
     List<JsonPathSegment> segments,
     int segmentStartIndex)
   {
+    var reader = new Utf8JsonReader(bytes, isFinalBlock: true, state: default);
+    if (!reader.Read() || reader.TokenType != JsonTokenType.StartArray)
+      return null;
+
     var index = 0;
 
-    await foreach (var item in JsonSerializer.DeserializeAsyncEnumerable<JsonElement>(stream))
+    while (reader.Read())
     {
+      if (reader.TokenType == JsonTokenType.EndArray)
+        return null;
+
       if (!IsArrayFirstSegmentElementMatch(firstSegment, index))
       {
+        SkipCurrentValue(ref reader);
         index++;
         continue;
       }
+
+      using var itemDocument = JsonDocument.ParseValue(ref reader);
+      var item = itemDocument.RootElement;
 
       if (segmentStartIndex >= segments.Count)
         return MaterializeElement(item);
@@ -228,67 +244,95 @@ internal static class JsonPathStreamingMatcher
     return null;
   }
 
-  private static async IAsyncEnumerable<JsonNode?> ExtractAllArrayRootElementMatchesAsync(
-    Stream stream,
+  private static List<JsonNode?> CollectAllArrayRootElementMatches(
+    byte[] bytes,
     JsonPathSegment firstSegment,
     List<JsonPathSegment> segments,
     int segmentStartIndex)
   {
+    var results = new List<JsonNode?>();
+    var reader = new Utf8JsonReader(bytes, isFinalBlock: true, state: default);
+    if (!reader.Read() || reader.TokenType != JsonTokenType.StartArray)
+      return results;
+
     var index = 0;
 
-    await foreach (var item in JsonSerializer.DeserializeAsyncEnumerable<JsonElement>(stream))
+    while (reader.Read())
     {
+      if (reader.TokenType == JsonTokenType.EndArray)
+        return results;
+
       if (!IsArrayFirstSegmentElementMatch(firstSegment, index))
       {
+        SkipCurrentValue(ref reader);
         index++;
         continue;
       }
 
+      using var itemDocument = JsonDocument.ParseValue(ref reader);
+      var item = itemDocument.RootElement;
+
       if (segmentStartIndex >= segments.Count)
       {
-        yield return MaterializeElement(item);
+        results.Add(MaterializeElement(item));
         index++;
         continue;
       }
 
       TryFindElementMatches(item, segments, segmentStartIndex, out var elementMatches);
       foreach (var elementMatch in elementMatches)
-        yield return MaterializeElement(elementMatch);
+        results.Add(MaterializeElement(elementMatch));
 
       index++;
     }
+
+    return results;
   }
 
-  private static async IAsyncEnumerable<JsonPathMatch> ExtractAllArrayRootElementMatchesWithPathsAsync(
-    Stream stream,
+  private static List<JsonPathMatch> CollectAllArrayRootElementMatchesWithPaths(
+    byte[] bytes,
     JsonPathSegment firstSegment,
     List<JsonPathSegment> segments,
     int segmentStartIndex)
   {
+    var results = new List<JsonPathMatch>();
+    var reader = new Utf8JsonReader(bytes, isFinalBlock: true, state: default);
+    if (!reader.Read() || reader.TokenType != JsonTokenType.StartArray)
+      return results;
+
     var index = 0;
 
-    await foreach (var item in JsonSerializer.DeserializeAsyncEnumerable<JsonElement>(stream))
+    while (reader.Read())
     {
+      if (reader.TokenType == JsonTokenType.EndArray)
+        return results;
+
       if (!IsArrayFirstSegmentElementMatch(firstSegment, index))
       {
+        SkipCurrentValue(ref reader);
         index++;
         continue;
       }
 
       var itemRootPath = $"$[{index}]";
+      using var itemDocument = JsonDocument.ParseValue(ref reader);
+      var item = itemDocument.RootElement;
+
       if (segmentStartIndex >= segments.Count)
       {
-        yield return new JsonPathMatch(itemRootPath, MaterializeElement(item));
+        results.Add(new JsonPathMatch(itemRootPath, MaterializeElement(item)));
         index++;
         continue;
       }
 
       TryFindElementMatchesWithPaths(item, segments, segmentStartIndex, itemRootPath, out var elementMatches);
       foreach (var elementMatch in elementMatches)
-        yield return new JsonPathMatch(elementMatch.Path, MaterializeElement(elementMatch.Element));
+        results.Add(new JsonPathMatch(elementMatch.Path, MaterializeElement(elementMatch.Element)));
 
       index++;
     }
+
+    return results;
   }
 
   private static async Task<JsonNode?> ExtractFirstObjectRootMatchAsync(Stream stream, List<JsonPathSegment> segments)
@@ -811,6 +855,12 @@ internal static class JsonPathStreamingMatcher
       JsonValueKind.False => JsonValue.Create(false),
       _ => JsonNode.Parse(element.GetRawText())
     };
+  }
+
+  private static void SkipCurrentValue(ref Utf8JsonReader reader)
+  {
+    if (reader.TokenType is JsonTokenType.StartArray or JsonTokenType.StartObject)
+      reader.Skip();
   }
 
   private static async Task<byte[]> ReadToEndAsync(Stream stream)

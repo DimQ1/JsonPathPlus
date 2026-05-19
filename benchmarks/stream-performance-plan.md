@@ -15,19 +15,20 @@
 3. Applied a `JsonElement`-based fast path to root-array streaming for simple wildcard/index/range/union selectors while preserving the existing fallback for unsupported segment types.
 4. Avoided `GetRawText()` plus `JsonNode.Parse()` for final `string`, `bool`, and `null` matches by materializing those scalars directly.
 5. Removed the streaming-path `segments.Skip(1).ToList()` copies by switching core matcher entry points to segment start-index traversal.
+6. Replaced the root-array simple-selector `DeserializeAsyncEnumerable<JsonElement>` path with a `Utf8JsonReader` scan over the stream bytes and on-demand `JsonDocument.ParseValue` for matched elements.
 
 ### Measured outcome so far
 
 1. Object-root simple and range selectors remain materially improved versus baseline, with roughly 38–50% lower mean time and 75–86% lower allocation.
-2. Root-array wildcard is now materially better than baseline at both latency and allocation.
-3. Root-array first-index is effectively flat on latency versus baseline, but uses less memory.
-4. Start-index traversal produced small additional allocation reductions across the measured stream cases and a further latency win on root-array wildcard, without changing behavior.
+2. Root-array wildcard is now materially better than baseline at both latency and allocation, with the largest gain coming from the reader-based root-array scan.
+3. Root-array first-index is no longer flat versus baseline; the reader-based scan moved it into the same latency class as the optimized object-root simple-property path.
+4. Start-index traversal produced small additional allocation reductions across the measured stream cases, but the reader-based root-array scan was the first change that materially shifted root-array first-index latency.
 
 ### Revised next priorities
 
 1. Add dedicated `WithPaths` benchmarks for object-root and root-array streaming so the new path-aware fast path has its own baseline.
 2. Reduce the remaining `MaterializeElement` cost for numeric scalars if that can be done without changing JSON semantics.
-3. Revisit root-array filter and other unsupported first-segment shapes only after the benchmark coverage above is in place.
+3. Revisit root-array filter and other unsupported first-segment shapes now that the simple root-array path has a substantially better baseline.
 4. Consider matcher-level list pooling only if the next benchmark pass shows traversal allocations still dominating after the benchmark coverage above is expanded.
 
 ---

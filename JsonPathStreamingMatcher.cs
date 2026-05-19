@@ -223,6 +223,14 @@ internal static class JsonPathStreamingMatcher
       }
 
       using var propertyDocument = JsonDocument.ParseValue(ref reader);
+      if (TryFindElementMatches(propertyDocument.RootElement, remainingSegments, out var elementMatches))
+      {
+        if (elementMatches.Count > 0)
+          return MaterializeElement(elementMatches[0]);
+
+        continue;
+      }
+
       var propertyNode = JsonNode.Parse(propertyDocument.RootElement.GetRawText());
       var match = JsonPathExtractionCore.FindFirstMatch(propertyNode, remainingSegments);
       if (match is not null)
@@ -261,6 +269,14 @@ internal static class JsonPathStreamingMatcher
       }
 
       using var propertyDocument = JsonDocument.ParseValue(ref reader);
+      if (TryFindElementMatches(propertyDocument.RootElement, remainingSegments, out var elementMatches))
+      {
+        foreach (var elementMatch in elementMatches)
+          results.Add(MaterializeElement(elementMatch));
+
+        continue;
+      }
+
       var propertyNode = JsonNode.Parse(propertyDocument.RootElement.GetRawText());
       foreach (var match in JsonPathExtractionCore.FindAllMatches(propertyNode, remainingSegments))
         results.Add(match);
@@ -297,8 +313,7 @@ internal static class JsonPathStreamingMatcher
         continue;
       }
 
-      using var propertyDocument = JsonDocument.ParseValue(ref reader);
-      var propertyNode = JsonNode.Parse(propertyDocument.RootElement.GetRawText());
+      var propertyNode = JsonNode.Parse(ref reader);
       var propertyPath = AppendPropertyPath("$", propertyName);
       foreach (var match in JsonPathExtractionCore.FindAllMatchesWithPaths(propertyNode, remainingSegments, propertyPath))
         results.Add(match);
@@ -333,8 +348,180 @@ internal static class JsonPathStreamingMatcher
     };
   }
 
+  private static bool TryFindElementMatches(
+    JsonElement root,
+    List<JsonPathSegment> segments,
+    out List<JsonElement> matches)
+  {
+    var current = new List<JsonElement> { root };
+
+    foreach (var segment in segments)
+    {
+      var next = new List<JsonElement>();
+
+      foreach (var element in current)
+      {
+        if (!TryCollectElementMatches(element, segment, next))
+        {
+          matches = new List<JsonElement>();
+          return false;
+        }
+      }
+
+      current = next;
+      if (current.Count == 0)
+        break;
+    }
+
+    matches = current;
+    return true;
+  }
+
+  private static bool TryCollectElementMatches(
+    JsonElement element,
+    JsonPathSegment segment,
+    List<JsonElement> results)
+  {
+    switch (segment.SegmentType)
+    {
+      case JsonPathSegmentType.Property:
+        if (element.ValueKind == JsonValueKind.Object &&
+            element.TryGetProperty(segment.PropertyName!, out var propertyValue))
+        {
+          results.Add(propertyValue);
+        }
+
+        return true;
+
+      case JsonPathSegmentType.ArrayIndex:
+        if (TryGetArrayElement(element, segment.ArrayIndex, out var arrayElement))
+          results.Add(arrayElement);
+
+        return true;
+
+      case JsonPathSegmentType.ArrayRange:
+        CollectArrayRangeElements(element, segment.ArrayIndex, segment.ArrayRangeEnd, results);
+        return true;
+
+      case JsonPathSegmentType.Wildcard:
+        CollectWildcardElements(element, results);
+        return true;
+
+      default:
+        return false;
+    }
+  }
+
+  private static bool TryGetArrayElement(JsonElement element, int index, out JsonElement match)
+  {
+    match = default;
+
+    if (element.ValueKind != JsonValueKind.Array)
+      return false;
+
+    var length = element.GetArrayLength();
+    var effectiveIndex = index < 0 ? length + index : index;
+    if (effectiveIndex < 0 || effectiveIndex >= length)
+      return false;
+
+    var currentIndex = 0;
+    foreach (var item in element.EnumerateArray())
+    {
+      if (currentIndex == effectiveIndex)
+      {
+        match = item;
+        return true;
+      }
+
+      currentIndex++;
+    }
+
+    return false;
+  }
+
+  private static void CollectArrayRangeElements(
+    JsonElement element,
+    int start,
+    int endExclusive,
+    List<JsonElement> results)
+  {
+    if (element.ValueKind != JsonValueKind.Array)
+      return;
+
+    var length = element.GetArrayLength();
+    var effectiveStart = start < 0 ? length + start : start;
+    var effectiveEnd = endExclusive == int.MaxValue
+      ? length
+      : (endExclusive < 0 ? length + endExclusive : endExclusive);
+
+    effectiveStart = Math.Clamp(effectiveStart, 0, length);
+    effectiveEnd = Math.Clamp(effectiveEnd, 0, length);
+    if (effectiveEnd < effectiveStart)
+      return;
+
+    var currentIndex = 0;
+    foreach (var item in element.EnumerateArray())
+    {
+      if (currentIndex >= effectiveEnd)
+        break;
+
+      if (currentIndex >= effectiveStart)
+        results.Add(item);
+
+      currentIndex++;
+    }
+  }
+
+  private static void CollectWildcardElements(JsonElement element, List<JsonElement> results)
+  {
+    if (element.ValueKind == JsonValueKind.Array)
+    {
+      foreach (var item in element.EnumerateArray())
+        results.Add(item);
+
+      return;
+    }
+
+    if (element.ValueKind != JsonValueKind.Object)
+      return;
+
+    foreach (var property in element.EnumerateObject())
+      results.Add(property.Value);
+  }
+
+  private static JsonNode? MaterializeElement(JsonElement element)
+    => JsonNode.Parse(element.GetRawText());
+
   private static async Task<byte[]> ReadToEndAsync(Stream stream)
   {
+    if (stream.CanSeek)
+    {
+      var remainingLength = stream.Length - stream.Position;
+      if (remainingLength <= 0)
+        return Array.Empty<byte>();
+
+      if (remainingLength <= int.MaxValue)
+      {
+        var buffer = new byte[(int)remainingLength];
+        var totalRead = 0;
+
+        while (totalRead < buffer.Length)
+        {
+          var bytesRead = await stream.ReadAsync(buffer.AsMemory(totalRead));
+          if (bytesRead == 0)
+            break;
+
+          totalRead += bytesRead;
+        }
+
+        if (totalRead == buffer.Length)
+          return buffer;
+
+        Array.Resize(ref buffer, totalRead);
+        return buffer;
+      }
+    }
+
     using var copy = new MemoryStream();
     await stream.CopyToAsync(copy);
     return copy.ToArray();

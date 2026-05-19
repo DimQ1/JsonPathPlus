@@ -18,6 +18,8 @@ internal static class JsonPathStreamingMatcher
     Object
   }
 
+  private readonly record struct ElementPathMatch(JsonElement Element, string Path);
+
   public static bool CanUseStreaming(Stream stream, List<JsonPathSegment> segments)
   {
     if (segments.Count == 0 || !stream.CanSeek)
@@ -118,6 +120,10 @@ internal static class JsonPathStreamingMatcher
   {
     var firstSegment = segments[0];
     var remainingSegments = segments.Skip(1).ToList();
+
+    if (CanUseElementArrayStreaming(firstSegment, remainingSegments))
+      return await ExtractFirstArrayRootElementMatchAsync(stream, firstSegment, remainingSegments);
+
     var index = 0;
 
     await foreach (var item in JsonSerializer.DeserializeAsyncEnumerable<JsonNode>(stream))
@@ -142,6 +148,15 @@ internal static class JsonPathStreamingMatcher
   {
     var firstSegment = segments[0];
     var remainingSegments = segments.Skip(1).ToList();
+
+    if (CanUseElementArrayStreaming(firstSegment, remainingSegments))
+    {
+      await foreach (var match in ExtractAllArrayRootElementMatchesAsync(stream, firstSegment, remainingSegments))
+        yield return match;
+
+      yield break;
+    }
+
     var index = 0;
 
     await foreach (var item in JsonSerializer.DeserializeAsyncEnumerable<JsonNode>(stream))
@@ -160,6 +175,15 @@ internal static class JsonPathStreamingMatcher
   {
     var firstSegment = segments[0];
     var remainingSegments = segments.Skip(1).ToList();
+
+    if (CanUseElementArrayStreaming(firstSegment, remainingSegments))
+    {
+      await foreach (var match in ExtractAllArrayRootElementMatchesWithPathsAsync(stream, firstSegment, remainingSegments))
+        yield return match;
+
+      yield break;
+    }
+
     var index = 0;
 
     await foreach (var item in JsonSerializer.DeserializeAsyncEnumerable<JsonNode>(stream))
@@ -170,6 +194,95 @@ internal static class JsonPathStreamingMatcher
         foreach (var match in JsonPathExtractionCore.FindAllMatchesWithPaths(item, remainingSegments, itemRootPath))
           yield return match;
       }
+
+      index++;
+    }
+  }
+
+  private static async Task<JsonNode?> ExtractFirstArrayRootElementMatchAsync(
+    Stream stream,
+    JsonPathSegment firstSegment,
+    List<JsonPathSegment> remainingSegments)
+  {
+    var index = 0;
+
+    await foreach (var item in JsonSerializer.DeserializeAsyncEnumerable<JsonElement>(stream))
+    {
+      if (!IsArrayFirstSegmentElementMatch(firstSegment, index))
+      {
+        index++;
+        continue;
+      }
+
+      if (remainingSegments.Count == 0)
+        return MaterializeElement(item);
+
+      TryFindElementMatches(item, remainingSegments, out var elementMatches);
+      if (elementMatches.Count > 0)
+        return MaterializeElement(elementMatches[0]);
+
+      index++;
+    }
+
+    return null;
+  }
+
+  private static async IAsyncEnumerable<JsonNode?> ExtractAllArrayRootElementMatchesAsync(
+    Stream stream,
+    JsonPathSegment firstSegment,
+    List<JsonPathSegment> remainingSegments)
+  {
+    var index = 0;
+
+    await foreach (var item in JsonSerializer.DeserializeAsyncEnumerable<JsonElement>(stream))
+    {
+      if (!IsArrayFirstSegmentElementMatch(firstSegment, index))
+      {
+        index++;
+        continue;
+      }
+
+      if (remainingSegments.Count == 0)
+      {
+        yield return MaterializeElement(item);
+        index++;
+        continue;
+      }
+
+      TryFindElementMatches(item, remainingSegments, out var elementMatches);
+      foreach (var elementMatch in elementMatches)
+        yield return MaterializeElement(elementMatch);
+
+      index++;
+    }
+  }
+
+  private static async IAsyncEnumerable<JsonPathMatch> ExtractAllArrayRootElementMatchesWithPathsAsync(
+    Stream stream,
+    JsonPathSegment firstSegment,
+    List<JsonPathSegment> remainingSegments)
+  {
+    var index = 0;
+
+    await foreach (var item in JsonSerializer.DeserializeAsyncEnumerable<JsonElement>(stream))
+    {
+      if (!IsArrayFirstSegmentElementMatch(firstSegment, index))
+      {
+        index++;
+        continue;
+      }
+
+      var itemRootPath = $"$[{index}]";
+      if (remainingSegments.Count == 0)
+      {
+        yield return new JsonPathMatch(itemRootPath, MaterializeElement(item));
+        index++;
+        continue;
+      }
+
+      TryFindElementMatchesWithPaths(item, remainingSegments, itemRootPath, out var elementMatches);
+      foreach (var elementMatch in elementMatches)
+        yield return new JsonPathMatch(elementMatch.Path, MaterializeElement(elementMatch.Element));
 
       index++;
     }
@@ -313,8 +426,17 @@ internal static class JsonPathStreamingMatcher
         continue;
       }
 
-      var propertyNode = JsonNode.Parse(ref reader);
       var propertyPath = AppendPropertyPath("$", propertyName);
+      using var propertyDocument = JsonDocument.ParseValue(ref reader);
+      if (TryFindElementMatchesWithPaths(propertyDocument.RootElement, remainingSegments, propertyPath, out var elementMatches))
+      {
+        foreach (var elementMatch in elementMatches)
+          results.Add(new JsonPathMatch(elementMatch.Path, MaterializeElement(elementMatch.Element)));
+
+        continue;
+      }
+
+      var propertyNode = JsonNode.Parse(propertyDocument.RootElement.GetRawText());
       foreach (var match in JsonPathExtractionCore.FindAllMatchesWithPaths(propertyNode, remainingSegments, propertyPath))
         results.Add(match);
     }
@@ -334,6 +456,44 @@ internal static class JsonPathStreamingMatcher
       JsonPathSegmentType.Filter => JsonPathFilterEvaluator.Evaluate(item, first.FilterExpression!),
       _ => false
     };
+  }
+
+  private static bool IsArrayFirstSegmentElementMatch(JsonPathSegment first, int index)
+  {
+    return first.SegmentType switch
+    {
+      JsonPathSegmentType.Wildcard => true,
+      JsonPathSegmentType.ArrayIndex => index == first.ArrayIndex,
+      JsonPathSegmentType.ArrayRange => index >= first.ArrayIndex
+        && (first.ArrayRangeEnd == int.MaxValue || index < first.ArrayRangeEnd),
+      JsonPathSegmentType.ArrayUnion => first.ArrayUnionIndices is not null && Array.IndexOf(first.ArrayUnionIndices, index) >= 0,
+      _ => false
+    };
+  }
+
+  private static bool CanUseElementArrayStreaming(
+    JsonPathSegment firstSegment,
+    List<JsonPathSegment> remainingSegments)
+  {
+    if (firstSegment.SegmentType == JsonPathSegmentType.Filter)
+      return false;
+
+    foreach (var segment in remainingSegments)
+    {
+      switch (segment.SegmentType)
+      {
+        case JsonPathSegmentType.Property:
+        case JsonPathSegmentType.ArrayIndex:
+        case JsonPathSegmentType.ArrayRange:
+        case JsonPathSegmentType.Wildcard:
+          continue;
+
+        default:
+          return false;
+      }
+    }
+
+    return true;
   }
 
   private static bool IsObjectFirstSegmentMatch(JsonPathSegment first, string propertyName)
@@ -364,6 +524,36 @@ internal static class JsonPathStreamingMatcher
         if (!TryCollectElementMatches(element, segment, next))
         {
           matches = new List<JsonElement>();
+          return false;
+        }
+      }
+
+      current = next;
+      if (current.Count == 0)
+        break;
+    }
+
+    matches = current;
+    return true;
+  }
+
+  private static bool TryFindElementMatchesWithPaths(
+    JsonElement root,
+    List<JsonPathSegment> segments,
+    string rootPath,
+    out List<ElementPathMatch> matches)
+  {
+    var current = new List<ElementPathMatch> { new(root, rootPath) };
+
+    foreach (var segment in segments)
+    {
+      var next = new List<ElementPathMatch>();
+
+      foreach (var currentMatch in current)
+      {
+        if (!TryCollectElementMatchesWithPaths(currentMatch, segment, next))
+        {
+          matches = new List<ElementPathMatch>();
           return false;
         }
       }
@@ -412,15 +602,62 @@ internal static class JsonPathStreamingMatcher
     }
   }
 
+  private static bool TryCollectElementMatchesWithPaths(
+    ElementPathMatch currentMatch,
+    JsonPathSegment segment,
+    List<ElementPathMatch> results)
+  {
+    switch (segment.SegmentType)
+    {
+      case JsonPathSegmentType.Property:
+        if (currentMatch.Element.ValueKind == JsonValueKind.Object &&
+            currentMatch.Element.TryGetProperty(segment.PropertyName!, out var propertyValue))
+        {
+          results.Add(new ElementPathMatch(
+            propertyValue,
+            AppendPropertyPath(currentMatch.Path, segment.PropertyName!)));
+        }
+
+        return true;
+
+      case JsonPathSegmentType.ArrayIndex:
+        if (TryGetArrayElement(currentMatch.Element, segment.ArrayIndex, out var arrayElement, out var effectiveIndex))
+        {
+          results.Add(new ElementPathMatch(
+            arrayElement,
+            AppendArrayIndexPath(currentMatch.Path, effectiveIndex)));
+        }
+
+        return true;
+
+      case JsonPathSegmentType.ArrayRange:
+        CollectArrayRangeElementsWithPaths(currentMatch, segment.ArrayIndex, segment.ArrayRangeEnd, results);
+        return true;
+
+      case JsonPathSegmentType.Wildcard:
+        CollectWildcardElementsWithPaths(currentMatch, results);
+        return true;
+
+      default:
+        return false;
+    }
+  }
+
   private static bool TryGetArrayElement(JsonElement element, int index, out JsonElement match)
   {
+    return TryGetArrayElement(element, index, out match, out _);
+  }
+
+  private static bool TryGetArrayElement(JsonElement element, int index, out JsonElement match, out int effectiveIndex)
+  {
     match = default;
+    effectiveIndex = -1;
 
     if (element.ValueKind != JsonValueKind.Array)
       return false;
 
     var length = element.GetArrayLength();
-    var effectiveIndex = index < 0 ? length + index : index;
+    effectiveIndex = index < 0 ? length + index : index;
     if (effectiveIndex < 0 || effectiveIndex >= length)
       return false;
 
@@ -472,6 +709,44 @@ internal static class JsonPathStreamingMatcher
     }
   }
 
+  private static void CollectArrayRangeElementsWithPaths(
+    ElementPathMatch currentMatch,
+    int start,
+    int endExclusive,
+    List<ElementPathMatch> results)
+  {
+    var element = currentMatch.Element;
+    if (element.ValueKind != JsonValueKind.Array)
+      return;
+
+    var length = element.GetArrayLength();
+    var effectiveStart = start < 0 ? length + start : start;
+    var effectiveEnd = endExclusive == int.MaxValue
+      ? length
+      : (endExclusive < 0 ? length + endExclusive : endExclusive);
+
+    effectiveStart = Math.Clamp(effectiveStart, 0, length);
+    effectiveEnd = Math.Clamp(effectiveEnd, 0, length);
+    if (effectiveEnd < effectiveStart)
+      return;
+
+    var currentIndex = 0;
+    foreach (var item in element.EnumerateArray())
+    {
+      if (currentIndex >= effectiveEnd)
+        break;
+
+      if (currentIndex >= effectiveStart)
+      {
+        results.Add(new ElementPathMatch(
+          item,
+          AppendArrayIndexPath(currentMatch.Path, currentIndex)));
+      }
+
+      currentIndex++;
+    }
+  }
+
   private static void CollectWildcardElements(JsonElement element, List<JsonElement> results)
   {
     if (element.ValueKind == JsonValueKind.Array)
@@ -489,8 +764,45 @@ internal static class JsonPathStreamingMatcher
       results.Add(property.Value);
   }
 
+  private static void CollectWildcardElementsWithPaths(
+    ElementPathMatch currentMatch,
+    List<ElementPathMatch> results)
+  {
+    if (currentMatch.Element.ValueKind == JsonValueKind.Array)
+    {
+      var index = 0;
+      foreach (var item in currentMatch.Element.EnumerateArray())
+      {
+        results.Add(new ElementPathMatch(item, AppendArrayIndexPath(currentMatch.Path, index)));
+        index++;
+      }
+
+      return;
+    }
+
+    if (currentMatch.Element.ValueKind != JsonValueKind.Object)
+      return;
+
+    foreach (var property in currentMatch.Element.EnumerateObject())
+    {
+      results.Add(new ElementPathMatch(
+        property.Value,
+        AppendPropertyPath(currentMatch.Path, property.Name)));
+    }
+  }
+
   private static JsonNode? MaterializeElement(JsonElement element)
-    => JsonNode.Parse(element.GetRawText());
+  {
+    return element.ValueKind switch
+    {
+      JsonValueKind.Null => null,
+      JsonValueKind.Undefined => null,
+      JsonValueKind.String => JsonValue.Create(element.GetString()),
+      JsonValueKind.True => JsonValue.Create(true),
+      JsonValueKind.False => JsonValue.Create(false),
+      _ => JsonNode.Parse(element.GetRawText())
+    };
+  }
 
   private static async Task<byte[]> ReadToEndAsync(Stream stream)
   {
@@ -576,6 +888,9 @@ internal static class JsonPathStreamingMatcher
       .Replace("'", "\\'", StringComparison.Ordinal);
     return $"{parentPath}['{escapedProperty}']";
   }
+
+  private static string AppendArrayIndexPath(string parentPath, int index)
+    => $"{parentPath}[{index}]";
 
   private static bool IsSimpleIdentifier(string propertyName)
   {

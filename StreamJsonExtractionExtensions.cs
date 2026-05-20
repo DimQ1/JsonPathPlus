@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading.Tasks;
@@ -198,45 +199,44 @@ public static class StreamJsonExtractionExtensions
 
   /// <summary>
   /// Parses <paramref name="json"/> and returns the first JSON match at <paramref name="selectToken"/>.
+  /// Uses stream-based extraction to avoid materializing the full <see cref="JsonNode"/> tree
+  /// for root arrays and objects.
   /// </summary>
-  public static Task<JsonNode?> ExtractFirstJsonMatchAsync(this string json, string? selectToken)
+  public static async Task<JsonNode?> ExtractFirstJsonMatchAsync(this string json, string? selectToken)
   {
     ArgumentNullException.ThrowIfNull(json);
 
-    var root = JsonNode.Parse(json);
-    var segments = JsonPathExtractionCore.ParseSegments(selectToken);
-    return Task.FromResult(JsonPathExtractionCore.FindFirstMatch(root, segments));
+    using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
+    return await stream.ExtractFirstJsonMatchAsync(selectToken);
   }
 
   /// <summary>
   /// Parses <paramref name="json"/> and returns all JSON matches at <paramref name="selectToken"/>.
+  /// Uses stream-based extraction to avoid materializing the full <see cref="JsonNode"/> tree
+  /// for root arrays and objects.
   /// </summary>
   public static async IAsyncEnumerable<JsonNode?> ExtractAllJsonMatchesAsync(
     this string json, string? selectToken)
   {
     ArgumentNullException.ThrowIfNull(json);
 
-    var root = JsonNode.Parse(json);
-    var segments = JsonPathExtractionCore.ParseSegments(selectToken);
-    foreach (var match in JsonPathExtractionCore.FindAllMatches(root, segments))
+    using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
+    await foreach (var match in stream.ExtractAllJsonMatchesAsync(selectToken))
       yield return match;
-
-    await Task.CompletedTask;
   }
 
   /// <summary>
   /// Parses <paramref name="json"/> and returns all JSON matches at <paramref name="selectToken"/> with absolute JSONPath locations.
+  /// Uses stream-based extraction to avoid materializing the full <see cref="JsonNode"/> tree
+  /// for root arrays and objects.
   /// </summary>
   public static async IAsyncEnumerable<JsonPathMatch> ExtractAllJsonMatchesWithPathsAsync(
     this string json, string? selectToken)
   {
     ArgumentNullException.ThrowIfNull(json);
 
-    var root = JsonNode.Parse(json);
-    var segments = JsonPathExtractionCore.ParseSegments(selectToken);
-    foreach (var match in JsonPathExtractionCore.FindAllMatchesWithPaths(root, segments))
+    using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
+    await foreach (var match in stream.ExtractAllJsonMatchesWithPathsAsync(selectToken))
       yield return match;
-
-    await Task.CompletedTask;
   }
 }

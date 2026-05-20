@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -935,7 +936,9 @@ internal static class JsonPathStreamingMatcher
 
   private static async Task<byte[]> ReadToEndAsync(Stream stream, byte[]? head)
   {
-    byte[]? remaining = null;
+    // Determine the data length first (seekable streams) or use a pooled buffer for copy.
+    byte[]? rented = null;
+    var dataLength = 0;
 
     try
     {
@@ -947,42 +950,74 @@ internal static class JsonPathStreamingMatcher
 
         if (remainingLength <= int.MaxValue)
         {
-          remaining = new byte[(int)remainingLength];
-          var totalRead = 0;
+          var length = (int)remainingLength;
+          rented = ArrayPool<byte>.Shared.Rent(length);
+          dataLength = 0;
 
-          while (totalRead < remaining.Length)
+          while (dataLength < length)
           {
-            var bytesRead = await stream.ReadAsync(remaining.AsMemory(totalRead));
+            var bytesRead = await stream.ReadAsync(rented.AsMemory(dataLength, length - dataLength));
             if (bytesRead == 0)
               break;
 
-            totalRead += bytesRead;
+            dataLength += bytesRead;
           }
-
-          if (totalRead != remaining.Length)
-            Array.Resize(ref remaining, totalRead);
         }
       }
 
-      if (remaining is null)
+      if (rented is null)
       {
+        // Non-seekable stream — use pooled buffer for copy
+        rented = ArrayPool<byte>.Shared.Rent(81920); // 80 KB default
         using var copy = new MemoryStream();
         await stream.CopyToAsync(copy);
-        remaining = copy.ToArray();
+        dataLength = (int)copy.Length;
+
+        if (dataLength > rented.Length)
+        {
+          ArrayPool<byte>.Shared.Return(rented);
+          rented = ArrayPool<byte>.Shared.Rent(dataLength);
+        }
+
+        copy.Position = 0;
+        await copy.ReadAsync(rented.AsMemory(0, dataLength));
       }
     }
     catch
     {
-      // If we allocated 'remaining' and concatenation fails, let the caller handle it
+      if (rented is not null)
+        ArrayPool<byte>.Shared.Return(rented);
+
       throw;
     }
 
-    if (head is null || head.Length == 0)
-      return remaining;
+    // Build the result (may need head bytes prepended)
+    byte[] result;
 
-    var result = new byte[head.Length + remaining.Length];
-    Array.Copy(head, 0, result, 0, head.Length);
-    Array.Copy(remaining, 0, result, head.Length, remaining.Length);
+    if (head is null || head.Length == 0)
+    {
+      if (dataLength == rented!.Length)
+      {
+        // Exact fit — return the rented array directly (caller owns it, pool benefit lost here)
+        result = rented;
+        rented = null;
+      }
+      else
+      {
+        result = new byte[dataLength];
+        Array.Copy(rented!, 0, result, 0, dataLength);
+      }
+    }
+    else
+    {
+      result = new byte[head.Length + dataLength];
+      Array.Copy(head, 0, result, 0, head.Length);
+      Array.Copy(rented!, 0, result, head.Length, dataLength);
+    }
+
+    if (rented is not null)
+      ArrayPool<byte>.Shared.Return(rented);
+
     return result;
   }
 

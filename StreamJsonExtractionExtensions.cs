@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
@@ -200,43 +201,70 @@ public static class StreamJsonExtractionExtensions
   /// <summary>
   /// Parses <paramref name="json"/> and returns the first JSON match at <paramref name="selectToken"/>.
   /// Uses stream-based extraction to avoid materializing the full <see cref="JsonNode"/> tree
-  /// for root arrays and objects.
+  /// for root arrays and objects. The UTF-8 encoding buffer is rented from <see cref="ArrayPool{T}"/>.
   /// </summary>
   public static async Task<JsonNode?> ExtractFirstJsonMatchAsync(this string json, string? selectToken)
   {
     ArgumentNullException.ThrowIfNull(json);
 
-    using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
-    return await stream.ExtractFirstJsonMatchAsync(selectToken);
+    using var rented = RentUtf8Stream(json);
+    return await rented.Stream.ExtractFirstJsonMatchAsync(selectToken);
   }
 
   /// <summary>
   /// Parses <paramref name="json"/> and returns all JSON matches at <paramref name="selectToken"/>.
   /// Uses stream-based extraction to avoid materializing the full <see cref="JsonNode"/> tree
-  /// for root arrays and objects.
+  /// for root arrays and objects. The UTF-8 encoding buffer is rented from <see cref="ArrayPool{T}"/>.
   /// </summary>
   public static async IAsyncEnumerable<JsonNode?> ExtractAllJsonMatchesAsync(
     this string json, string? selectToken)
   {
     ArgumentNullException.ThrowIfNull(json);
 
-    using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
-    await foreach (var match in stream.ExtractAllJsonMatchesAsync(selectToken))
+    using var rented = RentUtf8Stream(json);
+    await foreach (var match in rented.Stream.ExtractAllJsonMatchesAsync(selectToken))
       yield return match;
   }
 
   /// <summary>
   /// Parses <paramref name="json"/> and returns all JSON matches at <paramref name="selectToken"/> with absolute JSONPath locations.
   /// Uses stream-based extraction to avoid materializing the full <see cref="JsonNode"/> tree
-  /// for root arrays and objects.
+  /// for root arrays and objects. The UTF-8 encoding buffer is rented from <see cref="ArrayPool{T}"/>.
   /// </summary>
   public static async IAsyncEnumerable<JsonPathMatch> ExtractAllJsonMatchesWithPathsAsync(
     this string json, string? selectToken)
   {
     ArgumentNullException.ThrowIfNull(json);
 
-    using var stream = new MemoryStream(Encoding.UTF8.GetBytes(json));
-    await foreach (var match in stream.ExtractAllJsonMatchesWithPathsAsync(selectToken))
+    using var rented = RentUtf8Stream(json);
+    await foreach (var match in rented.Stream.ExtractAllJsonMatchesWithPathsAsync(selectToken))
       yield return match;
+  }
+
+  private static RentedUtf8Stream RentUtf8Stream(string json)
+  {
+    var maxByteCount = Encoding.UTF8.GetMaxByteCount(json.Length);
+    var rented = ArrayPool<byte>.Shared.Rent(maxByteCount);
+    var actualLength = Encoding.UTF8.GetBytes(json.AsSpan(), rented);
+    var stream = new ReadOnlyMemoryStream(new ReadOnlyMemory<byte>(rented, 0, actualLength));
+    return new RentedUtf8Stream(stream, rented);
+  }
+
+  private readonly struct RentedUtf8Stream : IDisposable
+  {
+    public Stream Stream { get; }
+    private readonly byte[]? _rented;
+
+    public RentedUtf8Stream(Stream stream, byte[] rented)
+    {
+      Stream = stream;
+      _rented = rented;
+    }
+
+    public void Dispose()
+    {
+      if (_rented is not null)
+        ArrayPool<byte>.Shared.Return(_rented);
+    }
   }
 }

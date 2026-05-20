@@ -97,6 +97,10 @@ internal static class JsonPathMatcher
           CollectPropertyUnionMatches(node, segment.PropertyUnionNames, results);
           break;
 
+        case JsonPathSegmentType.NestedQuery:
+          CollectNestedQueryMatches(node, segment.NestedQueryBranches, results);
+          break;
+
         case JsonPathSegmentType.Filter:
           CollectFilterMatches(node, segment.FilterExpression, results);
           break;
@@ -385,6 +389,13 @@ internal static class JsonPathMatcher
 
         return visit(JsonValue.Create(count));
 
+      case JsonPathSegmentType.NestedQuery:
+        if (node is not JsonObject nestedObj || segment.NestedQueryBranches is null)
+          return true;
+
+        var nestedMatch = BuildNestedQueryResult(nestedObj, segment.NestedQueryBranches);
+        return nestedMatch is null || visit(nestedMatch);
+
       default:
         return true;
     }
@@ -509,6 +520,10 @@ internal static class JsonPathMatcher
 
         case JsonPathSegmentType.PropertyUnion:
           CollectPropertyUnionMatchesWithPaths(context, segment.PropertyUnionNames, results);
+          break;
+
+        case JsonPathSegmentType.NestedQuery:
+          CollectNestedQueryMatchesWithPaths(context, segment.NestedQueryBranches, results);
           break;
 
         case JsonPathSegmentType.Filter:
@@ -728,6 +743,62 @@ internal static class JsonPathMatcher
     }
 
     results.Add(projectedObject);
+  }
+
+  private static void CollectNestedQueryMatches(JsonNode? node, NestedQueryBranch[]? branches, List<JsonNode?> results)
+  {
+    var resultObject = BuildNestedQueryResult(node, branches);
+    if (resultObject is not null)
+      results.Add(resultObject);
+  }
+
+  private static void CollectNestedQueryMatchesWithPaths(MatchContext context, NestedQueryBranch[]? branches, List<MatchContext> results)
+  {
+    var resultObject = BuildNestedQueryResult(context.Node, branches);
+    if (resultObject is not null)
+      results.Add(new MatchContext(resultObject, context.Path));
+  }
+
+  private static JsonObject? BuildNestedQueryResult(JsonNode? node, NestedQueryBranch[]? branches)
+  {
+    if (node is not JsonObject obj || branches is null || branches.Length == 0)
+      return null;
+
+    var resultObject = new JsonObject();
+
+    foreach (var branch in branches)
+    {
+      if (!obj.TryGetPropertyValue(branch.PropertyName, out var value) || value is null)
+        continue;
+
+      if (branch.SubSegments.Count == 0)
+      {
+        // No sub-path — include value as-is
+        resultObject[branch.PropertyName] = value.DeepClone();
+      }
+      else
+      {
+        // Apply sub-segments to the property value
+        var subMatches = FindMatches(value, branch.SubSegments, 0);
+
+        if (subMatches.Count == 0)
+          continue; // Nothing matched — omit key
+
+        if (subMatches.Count == 1)
+        {
+          resultObject[branch.PropertyName] = subMatches[0]?.DeepClone();
+        }
+        else
+        {
+          var resultArray = new JsonArray();
+          foreach (var match in subMatches)
+            resultArray.Add(match?.DeepClone());
+          resultObject[branch.PropertyName] = resultArray;
+        }
+      }
+    }
+
+    return resultObject.Count > 0 ? resultObject : null;
   }
 
   private static void CollectFieldExclusionMatches(JsonNode? node, string[]? fields, List<JsonNode?> results)

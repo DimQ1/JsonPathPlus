@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace JsonPathPlus;
 
@@ -11,7 +12,12 @@ internal readonly record struct JsonPathSegment(
   string[]? PropertyUnionNames = null,
   string? FilterExpression = null,
   string? ComputedIndexExpression = null,
-  string[]? ProjectionFields = null);
+  string[]? ProjectionFields = null,
+  NestedQueryBranch[]? NestedQueryBranches = null);
+
+internal readonly record struct NestedQueryBranch(
+  string PropertyName,
+  List<JsonPathSegment> SubSegments);
 
 internal enum JsonPathSegmentType
 {
@@ -27,5 +33,6 @@ internal enum JsonPathSegmentType
   FieldProjection,
   FieldExclusion,
   FieldExistence,
-  FieldCount
+  FieldCount,
+  NestedQuery
 }

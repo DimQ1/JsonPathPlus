@@ -109,6 +109,7 @@ git push -u origin release_1.0.0
 | Computed index expression | `$.items[(@.length-1)]` | Index from expression evaluated against array length | ✅ Implemented |
 | Field inclusion projection | `$.books[title, author]` | Include only specified fields in result objects | ✅ Implemented |
 | Field exclusion | `$.books[!title, !price]` | Exclude specified fields from result objects | ✅ Implemented |
+| Nested query | `$.store[book[?(@.price<20)][title,author], bicycle[color], name]` | Apply sub-paths per key and combine into a result object | ✅ Implemented |
 
 ## API reference
 
@@ -199,6 +200,35 @@ Both features work on individual objects and arrays of objects:
 - Exclusion only applies to objects. Arrays and scalar values are returned unchanged.
 - A field exclusion segment is applied **after** all previous path segments complete.
 - Excluding all fields returns an empty object `{}`.
+
+### Nested query
+
+**Nested queries** allow applying sub-paths to specific keys within a single bracket expression and combining the results into a result object:
+
+```csharp
+// Select books under $20 with title/author, bicycle color, and the store name
+await foreach (var result in stream.ExtractAllJsonMatchesAsync(
+    "$.store[book[?(@.price < 20)][title, author], bicycle[color], name]"))
+{
+    Console.WriteLine(result);
+}
+// Output: { "name": "Bookstore", "bicycle": { "color": "red" }, "book": [{ "title": "Book A", "author": "Author 1" }, ...] }
+```
+
+Each key in the bracket expression can have its own sub-path (filters, projections, exclusions, etc.) applied independently:
+
+| Syntax | Example | Result |
+|---|---|---|
+| Simple key refs | `$[name, version]` | Object with name and version fields (parsed as field projection) |
+| Key with sub-path | `$.store[book[?(@.price < 20)][title, author], name]` | Filtered books with title/author, plus store name |
+| Key with projection | `$.data[users[name, email], config[theme]]` | Users with name/email, config with only theme |
+| Non-existent key | `$.obj[missing[key], present]` | Key absent from result; only present returned |
+
+**Behavior:**
+- Keys that don't exist in the source object are omitted from the result.
+- Sub-paths that match nothing cause the key to be omitted.
+- A single sub-path match is kept as-is; multiple matches are collected into an array.
+- Nested query is triggered when at least one branch has bracket-delimited sub-paths; otherwise, it falls through to existing segment types (field projection, property union, etc.).
 
 ## Malformed path behavior
 

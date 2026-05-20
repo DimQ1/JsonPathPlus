@@ -61,7 +61,7 @@ internal static class JsonPathParser
     ref ReadOnlySpan<char> path,
     List<JsonPathSegment> segments)
   {
-    var close = path.IndexOf(']');
+    var close = FindMatchingCloseBracket(path);
     if (close <= 0)
     {
       path = ReadOnlySpan<char>.Empty;
@@ -96,7 +96,7 @@ internal static class JsonPathParser
     ref ReadOnlySpan<char> path,
     List<JsonPathSegment> segments)
   {
-    var close = path.IndexOf(']');
+    var close = FindMatchingCloseBracket(path);
     if (close < 0)
     {
       path = ReadOnlySpan<char>.Empty;
@@ -112,6 +112,8 @@ internal static class JsonPathParser
       segments.Add(new JsonPathSegment(null, -1, -1, JsonPathSegmentType.Filter, null, null, filterExpression));
     else if (TryParseComputedIndex(inner, out var computedExpression))
       segments.Add(new JsonPathSegment(null, -1, -1, JsonPathSegmentType.ComputedIndex, null, null, null, computedExpression));
+    else if (TryParseNestedQuery(inner, out var nestedBranches))
+      segments.Add(new JsonPathSegment(null, -1, -1, JsonPathSegmentType.NestedQuery, null, null, null, null, null, nestedBranches));
     else if (TryParseUnion(inner, out var indexUnion, out var propertyUnion))
     {
       if (indexUnion is not null)
@@ -181,6 +183,121 @@ internal static class JsonPathParser
     }
 
     return propertyUnion.Length > 0;
+  }
+
+  private static bool TryParseNestedQuery(ReadOnlySpan<char> inner, out NestedQueryBranch[]? branches)
+  {
+    branches = null;
+
+    // Must contain a comma or a bracket indicating sub-paths
+    if (inner.IndexOf(',') < 0 && inner.IndexOf('[') < 0)
+      return false;
+
+    var parts = SplitTopLevelCommas(inner);
+    if (parts.Count == 0)
+      return false;
+
+    var branchList = new List<NestedQueryBranch>();
+    var hasSubPath = false;
+
+    foreach (var part in parts)
+    {
+      var trimmed = part.Trim();
+      if (trimmed.Length == 0)
+        return false;
+
+      // Must not be quoted or numeric — those belong to other segment types
+      if (trimmed[0] == '"' || trimmed[0] == '\'')
+        return false;
+
+      // Find the first '[' to separate key name from sub-paths
+      var bracketPos = trimmed.IndexOf('[');
+      string keyName;
+      List<JsonPathSegment>? subSegments = null;
+
+      if (bracketPos < 0)
+      {
+        keyName = trimmed.ToString();
+      }
+      else
+      {
+        keyName = trimmed[..bracketPos].ToString();
+        var subPath = trimmed[bracketPos..];
+        subSegments = Parse(subPath);
+        hasSubPath = true;
+      }
+
+      // Validate key name: must be a valid bare identifier, not numeric
+      if (keyName.Length == 0)
+        return false;
+      if (int.TryParse(keyName, out _))
+        return false;
+      if (!IsValidIdentifier(keyName))
+        return false;
+
+      branchList.Add(new NestedQueryBranch(keyName, subSegments ?? new List<JsonPathSegment>()));
+    }
+
+    // Must have at least one branch with sub-path to distinguish from field projection
+    if (!hasSubPath)
+      return false;
+
+    branches = branchList.ToArray();
+    return true;
+  }
+
+  private static List<string> SplitTopLevelCommas(ReadOnlySpan<char> input)
+  {
+    var parts = new List<string>();
+    var depth = 0;
+    var start = 0;
+
+    for (var i = 0; i < input.Length; i++)
+    {
+      switch (input[i])
+      {
+        case '[':
+          depth++;
+          break;
+        case ']':
+          if (depth > 0)
+            depth--;
+          break;
+        case ',':
+          if (depth == 0)
+          {
+            parts.Add(input[start..i].ToString());
+            start = i + 1;
+          }
+          break;
+      }
+    }
+
+    if (start < input.Length)
+      parts.Add(input[start..].ToString());
+
+    return parts;
+  }
+
+  private static int FindMatchingCloseBracket(ReadOnlySpan<char> span)
+  {
+    var depth = 0;
+    for (var i = 0; i < span.Length; i++)
+    {
+      switch (span[i])
+      {
+        case '[':
+          depth++;
+          break;
+        case ']':
+          depth--;
+          if (depth == 0)
+            return i;
+          break;
+      }
+    }
+
+    return -1;
   }
 
   private static bool TryParseFieldExclusion(ReadOnlySpan<char> exclusionStr, out string[]? fields)

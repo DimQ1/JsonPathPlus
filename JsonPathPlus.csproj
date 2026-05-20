@@ -1,19 +1,22 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
+    <TargetFrameworks>net8.0;net9.0;net10.0;net11.0</TargetFrameworks>
     <Nullable>enable</Nullable>
     <ImplicitUsings>disable</ImplicitUsings>
     <LangVersion>12</LangVersion>
 
     <!-- NuGet package metadata -->
     <PackageId>JsonPathPlus</PackageId>
-    <Version>1.5.0</Version>
+    <Version>1.6.0</Version>
     <Authors>JsonPathPlus</Authors>
     <Description>Lightweight JSONPath-like stream extension for System.Text.Json. Supports property access, array indexing, wildcards, ranges, and recursive descent without loading the full document into memory.</Description>
     <PackageTags>json jsonpath stream System.Text.Json dotnet</PackageTags>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
     <PackageReadmeFile>README.md</PackageReadmeFile>
+    <RepositoryUrl>https://github.com/Dimq1/JsonPathPlus</RepositoryUrl>
+    <RepositoryType>git</RepositoryType>
+    <PackageProjectUrl>https://github.com/Dimq1/JsonPathPlus</PackageProjectUrl>
   </PropertyGroup>
 
   <ItemGroup>

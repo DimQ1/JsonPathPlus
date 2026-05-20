@@ -2,7 +2,7 @@
 
 ## Project Scope
 - Library: JsonPathPlus for JSONPath-like extraction over JSON streams.
-- Target framework: net8.0; net10.0 (dual-targeted).
+- Target framework: net8.0; net9.0; net10.0; net11.0.
 - Published as NuGet package: [JsonPathPlus](https://www.nuget.org/packages/JsonPathPlus)
 - Online evaluator (sibling workspace): [jsonpath-plus-online-evaluator](https://dimq1.github.io/jsonpath-plus-online-evaluator/)
 

@@ -49,6 +49,36 @@ internal static class BenchmarkData
     /// <summary>Root-level array for streaming benchmarks.</summary>
     public static readonly string RootArray = GenerateRootArray(500);
 
+    /// <summary>Store-shaped object for nested query benchmarks.</summary>
+    public static readonly string Store = GenerateStore();
+
+    private static string GenerateStore()
+    {
+        var books = new System.Text.StringBuilder();
+        books.Append('[');
+        for (int i = 0; i < 50; i++)
+        {
+            if (i > 0) books.Append(',');
+            books.Append($"{{\"title\":\"Book {i}\",\"author\":\"Author {i}\",\"price\":{5.0 + i * 2},\"isbn\":\"isbn-{i}\",\"category\":{(i % 3 == 0 ? "\"fiction\"" : i % 3 == 1 ? "\"non-fiction\"" : "\"reference\"")}}}");
+        }
+        books.Append(']');
+
+        return $$"""
+        {
+            "store": {
+                "name": "Benchmark Bookstore",
+                "location": "Test City",
+                "book": {{books}},
+                "bicycle": { "color": "red", "price": 300, "brand": "TestBrand" },
+                "magazines": [
+                    { "title": "Mag A", "issue": 1, "price": 5 },
+                    { "title": "Mag B", "issue": 2, "price": 7 }
+                ]
+            }
+        }
+        """;
+    }
+
     private static string GenerateMedium()
     {
         var items = new System.Text.StringBuilder();

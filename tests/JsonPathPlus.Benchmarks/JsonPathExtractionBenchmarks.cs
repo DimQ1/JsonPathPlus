@@ -18,10 +18,12 @@ public class JsonPathExtractionBenchmarks
     private JsonNode? _largeNode;
     private JsonNode? _deeplyNestedNode;
     private JsonNode? _rootArrayNode;
+    private JsonNode? _storeNode;
     private Stream _mediumStream = null!;
     private Stream _largeStream = null!;
     private Stream _deeplyNestedStream = null!;
     private Stream _rootArrayStream = null!;
+    private Stream _storeStream = null!;
     private JsonPathExtractionOptions _defaultOptions;
     private JsonPathExtractionOptions _cappedOptions;
 
@@ -32,11 +34,13 @@ public class JsonPathExtractionBenchmarks
         _largeNode = JsonNode.Parse(BenchmarkData.Large);
         _deeplyNestedNode = JsonNode.Parse(BenchmarkData.DeeplyNested);
         _rootArrayNode = JsonNode.Parse(BenchmarkData.RootArray);
+        _storeNode = JsonNode.Parse(BenchmarkData.Store);
 
         _mediumStream = CreateStream(BenchmarkData.Medium);
         _largeStream = CreateStream(BenchmarkData.Large);
         _deeplyNestedStream = CreateStream(BenchmarkData.DeeplyNested);
         _rootArrayStream = CreateStream(BenchmarkData.RootArray);
+        _storeStream = CreateStream(BenchmarkData.Store);
 
         _defaultOptions = default;
         _cappedOptions = new JsonPathExtractionOptions { FullParseMaxBytes = 10_000_000 };
@@ -49,6 +53,7 @@ public class JsonPathExtractionBenchmarks
         _largeStream.Dispose();
         _deeplyNestedStream.Dispose();
         _rootArrayStream.Dispose();
+        _storeStream.Dispose();
     }
 
     // ══════════════════════════════════════════════════════════════════
@@ -204,6 +209,54 @@ public class JsonPathExtractionBenchmarks
     [Benchmark]
     public Task Stream_RootArray_All_Wildcard()
         => ConsumeAll(_rootArrayStream.ExtractAllJsonMatchesAsync("$[*].name"));
+
+    // ══════════════════════════════════════════════════════════════════
+    //  Nested query benchmarks (all input types)
+    // ══════════════════════════════════════════════════════════════════
+
+    private const string NestedQueryPath = "$.store[book[?(@.price < 20)][title, author], bicycle[color], name]";
+
+    // ── Stream input ──
+
+    [Benchmark]
+    public Task<JsonNode?> Stream_First_NestedQuery()
+        => _storeStream.ExtractFirstJsonMatchAsync(NestedQueryPath);
+
+    [Benchmark]
+    public Task Stream_All_NestedQuery()
+        => ConsumeAll(_storeStream.ExtractAllJsonMatchesAsync(NestedQueryPath));
+
+    // ── JsonNode input ──
+
+    [Benchmark]
+    public JsonNode? Node_First_NestedQuery()
+        => _storeNode!.ExtractFirstJsonMatchAsync(NestedQueryPath).GetAwaiter().GetResult();
+
+    [Benchmark]
+    public int Node_All_NestedQuery()
+    {
+        int count = 0;
+        var e = _storeNode!.ExtractAllJsonMatchesAsync(NestedQueryPath).GetAsyncEnumerator();
+        while (e.MoveNextAsync().GetAwaiter().GetResult())
+            count++;
+        return count;
+    }
+
+    // ── string input ──
+
+    [Benchmark]
+    public JsonNode? String_First_NestedQuery()
+        => BenchmarkData.Store.ExtractFirstJsonMatchAsync(NestedQueryPath).GetAwaiter().GetResult();
+
+    [Benchmark]
+    public int String_All_NestedQuery()
+    {
+        int count = 0;
+        var e = BenchmarkData.Store.ExtractAllJsonMatchesAsync(NestedQueryPath).GetAsyncEnumerator();
+        while (e.MoveNextAsync().GetAwaiter().GetResult())
+            count++;
+        return count;
+    }
 
     // ── Helpers ─────────────────────────────────────────────────────
 

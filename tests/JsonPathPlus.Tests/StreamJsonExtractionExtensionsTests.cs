@@ -1166,6 +1166,172 @@ public sealed class StreamJsonExtractionExtensionsTests
     }
   }
 
+  [Fact]
+  public async Task ExtractFirstJsonMatchAsync_WithNestedQuery_ReturnsResultObject()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    var result = await stream.ExtractFirstJsonMatchAsync("$[books[?(@.price < 20)][title, author], name]");
+
+    Assert.NotNull(result);
+    var obj = result as JsonObject;
+    Assert.NotNull(obj);
+
+    // name should be the root-level name
+    Assert.Equal("rootName", obj!["name"]?.GetValue<string>());
+
+    // books array should contain filtered and projected items
+    var books = obj!["books"] as JsonArray;
+    Assert.NotNull(books);
+    // All three books in SampleJson are under 20 (prices: 5, 15, 8)
+    Assert.Equal(3, books!.Count);
+
+    // Each book should only have title and author
+    foreach (var book in books!)
+    {
+      var bookObj = book as JsonObject;
+      Assert.NotNull(bookObj);
+      Assert.True(bookObj!.ContainsKey("title"));
+      Assert.True(bookObj!.ContainsKey("author"));
+      Assert.False(bookObj!.ContainsKey("price"));
+      Assert.False(bookObj!.ContainsKey("isbn"));
+    }
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithNestedQuery_ReturnsResultObject()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$[books[?(@.price < 20)][title, author], name]"));
+
+    Assert.Single(results);
+    var obj = results[0] as JsonObject;
+    Assert.NotNull(obj);
+    Assert.Equal("rootName", obj!["name"]?.GetValue<string>());
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithNestedQuery_OmitsKeyWhenSubPathMatchesNothing()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$[books[?(@.price > 999)][title], name]"));
+
+    Assert.Single(results);
+    var obj = results[0] as JsonObject;
+    Assert.NotNull(obj);
+    // name should be present
+    Assert.Equal("rootName", obj!["name"]?.GetValue<string>());
+    // books should be absent because no book has price > 999
+    Assert.False(obj!.ContainsKey("books"));
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithNestedQuery_OmitsKeyWhenPropertyDoesNotExist()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$[nonexistent[title], name]"));
+
+    Assert.Single(results);
+    var obj = results[0] as JsonObject;
+    Assert.NotNull(obj);
+    Assert.Equal("rootName", obj!["name"]?.GetValue<string>());
+    Assert.False(obj!.ContainsKey("nonexistent"));
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithNestedQuery_ReturnsSingleItemWithoutArrayWrapping()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    // obj has p1 and p2, [p1] sub-path selects just p1 field from obj
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$[obj[p1], name]"));
+
+    Assert.Single(results);
+    var obj = results[0] as JsonObject;
+    Assert.NotNull(obj);
+    Assert.Equal("rootName", obj!["name"]?.GetValue<string>());
+
+    // obj should be a projected object with just p1
+    var subObj = obj!["obj"] as JsonObject;
+    Assert.NotNull(subObj);
+    Assert.True(subObj!.ContainsKey("p1"));
+    Assert.Equal("v1", subObj["p1"]?.GetValue<string>());
+    Assert.False(subObj.ContainsKey("p2"));
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithNestedQuery_SimplePropertyRefs_ReturnsAllKeys()
+  {
+    using var stream = CreateStream(SampleJson);
+
+    // This is not a valid nested query (no sub-paths, all bare names)
+    // so it should fall through to field projection
+    var results = await CollectAsync(stream.ExtractAllJsonMatchesAsync("$[name, items]"));
+
+    // Should behave as field projection — but wait, $ is root object,
+    // field projection on root object: results in a projected object with name and items
+    Assert.Single(results);
+    var obj = results[0] as JsonObject;
+    Assert.NotNull(obj);
+    Assert.True(obj!.ContainsKey("name"));
+    Assert.True(obj!.ContainsKey("items"));
+    Assert.False(obj!.ContainsKey("a"));
+  }
+
+  [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithNestedQuery_MultipleBranchesWithSubPaths_ProducesExpectedStructure()
+  {
+    const string storeJson = """
+    {
+      "store": {
+        "name": "Bookstore",
+        "book": [
+          { "title": "Book A", "author": "Author 1", "price": 10 },
+          { "title": "Book B", "author": "Author 2", "price": 25 },
+          { "title": "Book C", "author": "Author 3", "price": 15 }
+        ],
+        "bicycle": { "color": "red", "price": 300 }
+      }
+    }
+    """;
+
+    using var stream = CreateStream(storeJson);
+
+    // Full example from the feature request
+    var results = await CollectAsync(
+      stream.ExtractAllJsonMatchesAsync(
+        "$.store[book[?(@.price < 20)][title, author], bicycle[color], name]"));
+
+    Assert.Single(results);
+    var obj = results[0] as JsonObject;
+    Assert.NotNull(obj);
+
+    // name as-is
+    Assert.Equal("Bookstore", obj!["name"]?.GetValue<string>());
+
+    // bicycle with only color projected
+    var bicycle = obj!["bicycle"] as JsonObject;
+    Assert.NotNull(bicycle);
+    Assert.Equal("red", bicycle!["color"]?.GetValue<string>());
+    Assert.False(bicycle!.ContainsKey("price"));
+
+    // book array filtered and projected
+    var books = obj!["book"] as JsonArray;
+    Assert.NotNull(books);
+    Assert.Equal(2, books!.Count); // Book A (10) and Book C (15) under 20
+    foreach (var book in books)
+    {
+      var bookObj = book as JsonObject;
+      Assert.NotNull(bookObj);
+      Assert.True(bookObj!.ContainsKey("title"));
+      Assert.True(bookObj!.ContainsKey("author"));
+      Assert.False(bookObj!.ContainsKey("price"));
+    }
+  }
+
   private static MemoryStream CreateStream(string json)
     => new(Encoding.UTF8.GetBytes(json));
 

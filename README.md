@@ -2,6 +2,7 @@
 
 [![NuGet](https://img.shields.io/nuget/v/JsonPathPlus?label=NuGet&logo=nuget)](https://www.nuget.org/packages/JsonPathPlus)
 [![GitHub release](https://img.shields.io/github/v/release/DimQ1/JsonPathPlus?label=GitHub&logo=github)](https://github.com/DimQ1/JsonPathPlus/releases)
+[![Live Demo](https://img.shields.io/badge/Live_Demo-🌐-blue)](https://dimq1.github.io/jsonpath-plus-online-evaluator/)
 
 Lightweight JSONPath-like `Stream` extensions for `System.Text.Json`.
 

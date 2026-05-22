@@ -1,5 +1,8 @@
 # JsonPathPlus
 
+[![NuGet](https://img.shields.io/nuget/v/JsonPathPlus?label=NuGet&logo=nuget)](https://www.nuget.org/packages/JsonPathPlus)
+[![GitHub release](https://img.shields.io/github/v/release/DimQ1/JsonPathPlus?label=GitHub&logo=github)](https://github.com/DimQ1/JsonPathPlus/releases)
+
 Lightweight JSONPath-like `Stream` extensions for `System.Text.Json`.
 
 Extracts JSON subtrees from a `Stream` by path expression.
@@ -40,6 +43,8 @@ Console.WriteLine(selected);
 
 NuGet publishing is automated in GitHub Actions and does not require local package push commands.
 
+Packages are published to **both** [nuget.org](https://www.nuget.org/packages/JsonPathPlus) and [GitHub Packages](https://github.com/DimQ1/JsonPathPlus/pkgs/nuget/JsonPathPlus).
+
 ### Workflows
 
 - Build validation: [.github/workflows/build.yml](.github/workflows/build.yml)
@@ -65,11 +70,14 @@ Only semantic versions in major.minor.patch format are accepted.
 
 When a release branch is pushed, [.github/workflows/publish-nuget.yml](.github/workflows/publish-nuget.yml) performs:
 
-1. Restore
-2. Build (Release) with /p:Version from branch name
-3. Test
-4. Pack with /p:PackageVersion from branch name
-5. Push package to nuget.org with --skip-duplicate
+1. Add GitHub Packages NuGet source (authenticated with `GITHUB_TOKEN`)
+2. Restore
+3. Build (Release) with /p:Version from branch name
+4. Test
+5. Pack with /p:PackageVersion from branch name
+6. Push package to nuget.org with --skip-duplicate
+7. Push package to GitHub Packages with --skip-duplicate
+8. Create a GitHub Release automatically with `--generate-notes`
 
 ### Typical commands
 

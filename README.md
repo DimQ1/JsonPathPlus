@@ -124,23 +124,29 @@ git push -u origin release_1.0.0
 
 ```csharp
 // Stream input
-Task<JsonNode?> ExtractFirstJsonMatchAsync(this Stream stream, string? selectToken)
-IAsyncEnumerable<JsonNode?> ExtractAllJsonMatchesAsync(this Stream stream, string? selectToken)
+Task<JsonNode?> ExtractFirstJsonMatchAsync(this Stream stream, string? selectToken, CancellationToken cancellationToken = default)
+IAsyncEnumerable<JsonNode?> ExtractAllJsonMatchesAsync(this Stream stream, string? selectToken, CancellationToken cancellationToken = default)
+IAsyncEnumerable<JsonPathMatch> ExtractAllJsonMatchesWithPathsAsync(this Stream stream, string? selectToken, CancellationToken cancellationToken = default)
 
 // Stream input with extraction options
-Task<JsonNode?> ExtractFirstJsonMatchAsync(this Stream stream, string? selectToken, JsonPathExtractionOptions options)
-IAsyncEnumerable<JsonNode?> ExtractAllJsonMatchesAsync(this Stream stream, string? selectToken, JsonPathExtractionOptions options)
+Task<JsonNode?> ExtractFirstJsonMatchAsync(this Stream stream, string? selectToken, JsonPathExtractionOptions options, CancellationToken cancellationToken = default)
+IAsyncEnumerable<JsonNode?> ExtractAllJsonMatchesAsync(this Stream stream, string? selectToken, JsonPathExtractionOptions options, CancellationToken cancellationToken = default)
+IAsyncEnumerable<JsonPathMatch> ExtractAllJsonMatchesWithPathsAsync(this Stream stream, string? selectToken, JsonPathExtractionOptions options, CancellationToken cancellationToken = default)
 
 // JsonNode input
-Task<JsonNode?> ExtractFirstJsonMatchAsync(this JsonNode? node, string? selectToken)
-IAsyncEnumerable<JsonNode?> ExtractAllJsonMatchesAsync(this JsonNode? node, string? selectToken)
+Task<JsonNode?> ExtractFirstJsonMatchAsync(this JsonNode? node, string? selectToken, CancellationToken cancellationToken = default)
+IAsyncEnumerable<JsonNode?> ExtractAllJsonMatchesAsync(this JsonNode? node, string? selectToken, CancellationToken cancellationToken = default)
+IAsyncEnumerable<JsonPathMatch> ExtractAllJsonMatchesWithPathsAsync(this JsonNode? node, string? selectToken, CancellationToken cancellationToken = default)
 
 // Raw JSON string input
-Task<JsonNode?> ExtractFirstJsonMatchAsync(this string json, string? selectToken)
-IAsyncEnumerable<JsonNode?> ExtractAllJsonMatchesAsync(this string json, string? selectToken)
+Task<JsonNode?> ExtractFirstJsonMatchAsync(this string json, string? selectToken, CancellationToken cancellationToken = default)
+IAsyncEnumerable<JsonNode?> ExtractAllJsonMatchesAsync(this string json, string? selectToken, CancellationToken cancellationToken = default)
+IAsyncEnumerable<JsonPathMatch> ExtractAllJsonMatchesWithPathsAsync(this string json, string? selectToken, CancellationToken cancellationToken = default)
 ```
 
 Passing `null` or `"$"` as `selectToken` returns the entire document.
+
+All extraction APIs accept an optional `CancellationToken`.
 
 `JsonPathExtractionOptions.FullParseMaxBytes` lets you cap fallback full-document parsing by stream size. Streaming selectors are still allowed under this cap.
 

@@ -6,6 +6,7 @@ using System.Linq;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace JsonPathPlus;
@@ -77,7 +78,7 @@ internal static class JsonPathStreamingMatcher
   /// The stream position must be immediately after the bytes captured in <paramref name="head"/>.
   /// For seekable streams, the position is restored after extraction.
   /// </summary>
-  public static async Task<JsonNode?> ExtractFirstMatchAsync(Stream stream, List<JsonPathSegment> segments, StreamHead head)
+  public static async Task<JsonNode?> ExtractFirstMatchAsync(Stream stream, List<JsonPathSegment> segments, StreamHead head, CancellationToken cancellationToken = default)
   {
     var origin = stream.CanSeek ? stream.Position : -1;
     try
@@ -90,8 +91,8 @@ internal static class JsonPathStreamingMatcher
 
       return head.RootKind switch
       {
-        RootContainerKind.Array => await ExtractFirstArrayRootMatchAsync(targetStream, segments),
-        RootContainerKind.Object => await ExtractFirstObjectRootMatchAsync(targetStream, segments),
+        RootContainerKind.Array => await ExtractFirstArrayRootMatchAsync(targetStream, segments, cancellationToken),
+        RootContainerKind.Object => await ExtractFirstObjectRootMatchAsync(targetStream, segments, cancellationToken),
         _ => null
       };
     }
@@ -107,7 +108,7 @@ internal static class JsonPathStreamingMatcher
   /// The stream position must be immediately after the bytes captured in <paramref name="head"/>.
   /// For seekable streams, the position is restored after extraction.
   /// </summary>
-  public static async IAsyncEnumerable<JsonNode?> ExtractAllMatchesAsync(Stream stream, List<JsonPathSegment> segments, StreamHead head)
+  public static async IAsyncEnumerable<JsonNode?> ExtractAllMatchesAsync(Stream stream, List<JsonPathSegment> segments, StreamHead head, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
   {
     var origin = stream.CanSeek ? stream.Position : -1;
     try
@@ -120,12 +121,12 @@ internal static class JsonPathStreamingMatcher
 
       if (head.RootKind == RootContainerKind.Array)
       {
-        await foreach (var match in ExtractAllArrayRootMatchesAsync(targetStream, segments))
+        await foreach (var match in ExtractAllArrayRootMatchesAsync(targetStream, segments, cancellationToken))
           yield return match;
       }
       else if (head.RootKind == RootContainerKind.Object)
       {
-        await foreach (var match in ExtractAllObjectRootMatchesAsync(targetStream, segments))
+        await foreach (var match in ExtractAllObjectRootMatchesAsync(targetStream, segments, cancellationToken))
           yield return match;
       }
     }
@@ -141,7 +142,7 @@ internal static class JsonPathStreamingMatcher
   /// The stream position must be immediately after the bytes captured in <paramref name="head"/>.
   /// For seekable streams, the position is restored after extraction.
   /// </summary>
-  public static async IAsyncEnumerable<JsonPathMatch> ExtractAllMatchesWithPathsAsync(Stream stream, List<JsonPathSegment> segments, StreamHead head)
+  public static async IAsyncEnumerable<JsonPathMatch> ExtractAllMatchesWithPathsAsync(Stream stream, List<JsonPathSegment> segments, StreamHead head, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
   {
     var origin = stream.CanSeek ? stream.Position : -1;
     try
@@ -154,12 +155,12 @@ internal static class JsonPathStreamingMatcher
 
       if (head.RootKind == RootContainerKind.Array)
       {
-        await foreach (var match in ExtractAllArrayRootMatchesWithPathsAsync(targetStream, segments))
+        await foreach (var match in ExtractAllArrayRootMatchesWithPathsAsync(targetStream, segments, cancellationToken))
           yield return match;
       }
       else if (head.RootKind == RootContainerKind.Object)
       {
-        await foreach (var match in ExtractAllObjectRootMatchesWithPathsAsync(targetStream, segments))
+        await foreach (var match in ExtractAllObjectRootMatchesWithPathsAsync(targetStream, segments, cancellationToken))
           yield return match;
       }
     }
@@ -182,20 +183,20 @@ internal static class JsonPathStreamingMatcher
     return combined;
   }
 
-  private static async Task<JsonNode?> ExtractFirstArrayRootMatchAsync(Stream stream, List<JsonPathSegment> segments)
+  private static async Task<JsonNode?> ExtractFirstArrayRootMatchAsync(Stream stream, List<JsonPathSegment> segments, CancellationToken cancellationToken)
   {
     var firstSegment = segments[0];
     const int remainingSegmentStartIndex = 1;
 
     if (CanUseElementArrayStreaming(segments, remainingSegmentStartIndex))
     {
-      var bytes = await ReadToEndAsync(stream);
+      var bytes = await ReadToEndAsync(stream, cancellationToken);
       return ExtractFirstArrayRootElementMatch(bytes, firstSegment, segments, remainingSegmentStartIndex);
     }
 
     var index = 0;
 
-    await foreach (var item in JsonSerializer.DeserializeAsyncEnumerable<JsonNode>(stream))
+    await foreach (var item in JsonSerializer.DeserializeAsyncEnumerable<JsonNode>(stream, options: (JsonSerializerOptions?)null, cancellationToken: cancellationToken))
     {
       if (!IsArrayFirstSegmentMatch(firstSegment, index, item))
       {
@@ -213,14 +214,14 @@ internal static class JsonPathStreamingMatcher
     return null;
   }
 
-  private static async IAsyncEnumerable<JsonNode?> ExtractAllArrayRootMatchesAsync(Stream stream, List<JsonPathSegment> segments)
+  private static async IAsyncEnumerable<JsonNode?> ExtractAllArrayRootMatchesAsync(Stream stream, List<JsonPathSegment> segments, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
   {
     var firstSegment = segments[0];
     const int remainingSegmentStartIndex = 1;
 
     if (CanUseElementArrayStreaming(segments, remainingSegmentStartIndex))
     {
-      var bytes = await ReadToEndAsync(stream);
+      var bytes = await ReadToEndAsync(stream, cancellationToken);
       foreach (var match in CollectAllArrayRootElementMatches(bytes, firstSegment, segments, remainingSegmentStartIndex))
         yield return match;
 
@@ -229,7 +230,7 @@ internal static class JsonPathStreamingMatcher
 
     var index = 0;
 
-    await foreach (var item in JsonSerializer.DeserializeAsyncEnumerable<JsonNode>(stream))
+    await foreach (var item in JsonSerializer.DeserializeAsyncEnumerable<JsonNode>(stream, options: (JsonSerializerOptions?)null, cancellationToken: cancellationToken))
     {
       if (IsArrayFirstSegmentMatch(firstSegment, index, item))
       {
@@ -241,14 +242,14 @@ internal static class JsonPathStreamingMatcher
     }
   }
 
-  private static async IAsyncEnumerable<JsonPathMatch> ExtractAllArrayRootMatchesWithPathsAsync(Stream stream, List<JsonPathSegment> segments)
+  private static async IAsyncEnumerable<JsonPathMatch> ExtractAllArrayRootMatchesWithPathsAsync(Stream stream, List<JsonPathSegment> segments, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
   {
     var firstSegment = segments[0];
     const int remainingSegmentStartIndex = 1;
 
     if (CanUseElementArrayStreaming(segments, remainingSegmentStartIndex))
     {
-      var bytes = await ReadToEndAsync(stream);
+      var bytes = await ReadToEndAsync(stream, cancellationToken);
       foreach (var match in CollectAllArrayRootElementMatchesWithPaths(bytes, firstSegment, segments, remainingSegmentStartIndex))
         yield return match;
 
@@ -257,7 +258,7 @@ internal static class JsonPathStreamingMatcher
 
     var index = 0;
 
-    await foreach (var item in JsonSerializer.DeserializeAsyncEnumerable<JsonNode>(stream))
+    await foreach (var item in JsonSerializer.DeserializeAsyncEnumerable<JsonNode>(stream, options: (JsonSerializerOptions?)null, cancellationToken: cancellationToken))
     {
       if (IsArrayFirstSegmentMatch(firstSegment, index, item))
       {
@@ -401,22 +402,22 @@ internal static class JsonPathStreamingMatcher
     return results;
   }
 
-  private static async Task<JsonNode?> ExtractFirstObjectRootMatchAsync(Stream stream, List<JsonPathSegment> segments)
+  private static async Task<JsonNode?> ExtractFirstObjectRootMatchAsync(Stream stream, List<JsonPathSegment> segments, CancellationToken cancellationToken)
   {
-    var bytes = await ReadToEndAsync(stream);
+    var bytes = await ReadToEndAsync(stream, cancellationToken);
     return ExtractFirstObjectRootMatch(bytes, segments);
   }
 
-  private static async IAsyncEnumerable<JsonNode?> ExtractAllObjectRootMatchesAsync(Stream stream, List<JsonPathSegment> segments)
+  private static async IAsyncEnumerable<JsonNode?> ExtractAllObjectRootMatchesAsync(Stream stream, List<JsonPathSegment> segments, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
   {
-    var bytes = await ReadToEndAsync(stream);
+    var bytes = await ReadToEndAsync(stream, cancellationToken);
     foreach (var match in CollectAllObjectRootMatches(bytes, segments))
       yield return match;
   }
 
-  private static async IAsyncEnumerable<JsonPathMatch> ExtractAllObjectRootMatchesWithPathsAsync(Stream stream, List<JsonPathSegment> segments)
+  private static async IAsyncEnumerable<JsonPathMatch> ExtractAllObjectRootMatchesWithPathsAsync(Stream stream, List<JsonPathSegment> segments, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
   {
-    var bytes = await ReadToEndAsync(stream);
+    var bytes = await ReadToEndAsync(stream, cancellationToken);
     foreach (var match in CollectAllObjectRootMatchesWithPaths(bytes, segments))
       yield return match;
   }
@@ -929,12 +930,17 @@ internal static class JsonPathStreamingMatcher
       reader.Skip();
   }
 
-  private static async Task<byte[]> ReadToEndAsync(Stream stream)
+  private static Task<byte[]> ReadToEndAsync(Stream stream)
   {
-    return await ReadToEndAsync(stream, head: null);
+    return ReadToEndAsync(stream, CancellationToken.None);
   }
 
-  private static async Task<byte[]> ReadToEndAsync(Stream stream, byte[]? head)
+  private static async Task<byte[]> ReadToEndAsync(Stream stream, CancellationToken cancellationToken)
+  {
+    return await ReadToEndAsync(stream, head: null, cancellationToken).ConfigureAwait(false);
+  }
+
+  private static async Task<byte[]> ReadToEndAsync(Stream stream, byte[]? head, CancellationToken cancellationToken = default)
   {
     // Determine the data length first (seekable streams) or use a pooled buffer for copy.
     byte[]? rented = null;
@@ -956,7 +962,7 @@ internal static class JsonPathStreamingMatcher
 
           while (dataLength < length)
           {
-            var bytesRead = await stream.ReadAsync(rented.AsMemory(dataLength, length - dataLength));
+            var bytesRead = await stream.ReadAsync(rented.AsMemory(dataLength, length - dataLength), cancellationToken);
             if (bytesRead == 0)
               break;
 
@@ -970,7 +976,7 @@ internal static class JsonPathStreamingMatcher
         // Non-seekable stream — use pooled buffer for copy
         rented = ArrayPool<byte>.Shared.Rent(81920); // 80 KB default
         using var copy = new MemoryStream();
-        await stream.CopyToAsync(copy);
+        await stream.CopyToAsync(copy, cancellationToken);
         dataLength = (int)copy.Length;
 
         if (dataLength > rented.Length)
@@ -980,7 +986,7 @@ internal static class JsonPathStreamingMatcher
         }
 
         copy.Position = 0;
-        await copy.ReadAsync(rented.AsMemory(0, dataLength));
+        await copy.ReadAsync(rented.AsMemory(0, dataLength), cancellationToken);
       }
     }
     catch

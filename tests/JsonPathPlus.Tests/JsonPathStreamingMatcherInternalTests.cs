@@ -5,6 +5,7 @@ using System.Linq;
 using System.Reflection;
 using System.Text;
 using System.Text.Json.Nodes;
+using System.Threading;
 using System.Threading.Tasks;
 using JsonPathPlus;
 using Xunit;
@@ -256,7 +257,9 @@ public sealed class JsonPathStreamingMatcherInternalTests
   {
     var method = typeof(JsonPathStreamingMatcher)
       .GetMethods(BindingFlags.NonPublic | BindingFlags.Static)
-      .Single(m => m.Name == "ReadToEndAsync" && m.GetParameters().Length == 2);
+      .Single(m => m.Name == "ReadToEndAsync"
+        && m.GetParameters().Length == 3
+        && m.GetParameters()[1].ParameterType == typeof(byte[]));
 
     using var seekableStream = CreateSeekableStream("[1,2,3]");
     var seekableResult = await InvokeReadToEndAsync(method, seekableStream, null);
@@ -309,7 +312,7 @@ public sealed class JsonPathStreamingMatcherInternalTests
   }
 
   private static async Task<byte[]> InvokeReadToEndAsync(MethodInfo method, Stream stream, byte[]? head)
-    => await (Task<byte[]>)method.Invoke(null, [stream, head])!;
+    => await (Task<byte[]>)method.Invoke(null, [stream, head, CancellationToken.None])!;
 
   private static List<JsonPathSegment> Segments(params JsonPathSegment[] segments)
     => new(segments);

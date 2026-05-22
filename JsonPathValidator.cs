@@ -9,13 +9,24 @@ public static class JsonPathValidator
 {
   private static readonly JsonPathValidationResult ValidResult = new(true);
 
+  private enum ValidationErrorKind
+  {
+    None,
+    UnclosedBracket,
+    MalformedFilter,
+    EmptyFilter,
+    MalformedComputedIndex,
+    EmptyComputedIndex
+  }
+
   /// <summary>
   /// Returns <see langword="true"/> when <paramref name="path"/> is structurally valid.
   /// <para>
   /// <see langword="null"/> and empty strings are considered valid (they select the root document).
   /// </para>
   /// </summary>
-  public static bool IsValid(string? path) => Validate(path).IsValid;
+  public static bool IsValid(string? path)
+    => string.IsNullOrEmpty(path) || TryValidate(path.AsSpan(), out _, out _);
 
   /// <summary>
   /// Validates <paramref name="path"/> and returns a <see cref="JsonPathValidationResult"/>
@@ -26,7 +37,17 @@ public static class JsonPathValidator
     if (string.IsNullOrEmpty(path))
       return ValidResult;
 
-    var span = path.AsSpan();
+    if (TryValidate(path.AsSpan(), out var error, out var position))
+      return ValidResult;
+
+    return CreateInvalidResult(error, position);
+  }
+
+  private static bool TryValidate(ReadOnlySpan<char> span, out ValidationErrorKind error, out int position)
+  {
+    error = ValidationErrorKind.None;
+    position = -1;
+
     var offset = 0;
 
     if (span[0] == '$')
@@ -35,61 +56,106 @@ public static class JsonPathValidator
       offset = 1;
     }
 
-    for (var i = 0; i < span.Length; i++)
+    var openIdx = span.IndexOf('[');
+    while (openIdx >= 0)
     {
-      if (span[i] != '[')
-        continue;
-
-      var closeIdx = FindMatchingClose(span, i);
+      var closeIdx = FindMatchingClose(span, openIdx);
       if (closeIdx < 0)
-        return new JsonPathValidationResult(false,
-          $"Unclosed '[' at position {offset + i}.");
+      {
+        error = ValidationErrorKind.UnclosedBracket;
+        position = offset + openIdx;
+        return false;
+      }
 
-      var inner = span[(i + 1)..closeIdx];
-      var innerError = ValidateInner(inner, offset + i);
-      if (innerError is not null)
-        return innerError;
+      var inner = span[(openIdx + 1)..closeIdx];
+      if (!ValidateInner(inner, offset + openIdx, out error, out position))
+        return false;
 
-      i = closeIdx;
+      var nextStart = closeIdx + 1;
+      if (nextStart >= span.Length)
+        return true;
+
+      var nextOpen = span[nextStart..].IndexOf('[');
+      openIdx = nextOpen < 0 ? -1 : nextStart + nextOpen;
     }
 
-    return ValidResult;
+    return true;
   }
 
-  private static JsonPathValidationResult? ValidateInner(ReadOnlySpan<char> inner, int position)
+  private static bool ValidateInner(ReadOnlySpan<char> inner, int innerPosition, out ValidationErrorKind error, out int position)
   {
-    if (inner.IsEmpty)
-      return null;
+    error = ValidationErrorKind.None;
+    position = -1;
 
-    // Filter expression: ?(...)
+    if (inner.IsEmpty)
+      return true;
+
     if (inner[0] == '?' && inner.Length >= 2 && inner[1] == '(')
     {
       if (inner[^1] != ')')
-        return new JsonPathValidationResult(false,
-          $"Malformed filter expression at position {position}: missing closing ')'.");
+      {
+        error = ValidationErrorKind.MalformedFilter;
+        position = innerPosition;
+        return false;
+      }
 
-      if (inner[2..^1].Trim().IsEmpty)
-        return new JsonPathValidationResult(false,
-          $"Empty filter expression at position {position}.");
+      if (IsWhiteSpace(inner[2..^1]))
+      {
+        error = ValidationErrorKind.EmptyFilter;
+        position = innerPosition;
+        return false;
+      }
 
-      return null;
+      return true;
     }
 
-    // Computed index expression: (...)
     if (inner[0] == '(')
     {
       if (inner[^1] != ')')
-        return new JsonPathValidationResult(false,
-          $"Malformed computed index expression at position {position}: missing closing ')'.");
+      {
+        error = ValidationErrorKind.MalformedComputedIndex;
+        position = innerPosition;
+        return false;
+      }
 
-      if (inner[1..^1].Trim().IsEmpty)
-        return new JsonPathValidationResult(false,
-          $"Empty computed index expression at position {position}.");
+      if (IsWhiteSpace(inner[1..^1]))
+      {
+        error = ValidationErrorKind.EmptyComputedIndex;
+        position = innerPosition;
+        return false;
+      }
 
-      return null;
+      return true;
     }
 
-    return null;
+    return true;
+  }
+
+  private static JsonPathValidationResult CreateInvalidResult(ValidationErrorKind error, int position)
+    => error switch
+    {
+      ValidationErrorKind.UnclosedBracket => new JsonPathValidationResult(false,
+        $"Unclosed '[' at position {position}."),
+      ValidationErrorKind.MalformedFilter => new JsonPathValidationResult(false,
+        $"Malformed filter expression at position {position}: missing closing ')'."),
+      ValidationErrorKind.EmptyFilter => new JsonPathValidationResult(false,
+        $"Empty filter expression at position {position}."),
+      ValidationErrorKind.MalformedComputedIndex => new JsonPathValidationResult(false,
+        $"Malformed computed index expression at position {position}: missing closing ')'."),
+      ValidationErrorKind.EmptyComputedIndex => new JsonPathValidationResult(false,
+        $"Empty computed index expression at position {position}."),
+      _ => new JsonPathValidationResult(false, $"Invalid JSONPath expression at position {position}.")
+    };
+
+  private static bool IsWhiteSpace(ReadOnlySpan<char> value)
+  {
+    for (var i = 0; i < value.Length; i++)
+    {
+      if (!char.IsWhiteSpace(value[i]))
+        return false;
+    }
+
+    return true;
   }
 
   /// <summary>
@@ -100,17 +166,38 @@ public static class JsonPathValidator
   /// </summary>
   private static int FindMatchingClose(ReadOnlySpan<char> span, int openPos)
   {
-    var quote = '\0';
-    for (var i = openPos + 1; i < span.Length; i++)
+    var firstSpecial = span[(openPos + 1)..].IndexOfAny(']', '"', '\'');
+    if (firstSpecial < 0)
+      return -1;
+
+    var firstSpecialIndex = openPos + 1 + firstSpecial;
+    var firstSpecialChar = span[firstSpecialIndex];
+    if (firstSpecialChar == ']')
+      return firstSpecialIndex;
+
+    return FindMatchingCloseAfterQuote(span, firstSpecialIndex, firstSpecialChar);
+  }
+
+  private static int FindMatchingCloseAfterQuote(ReadOnlySpan<char> span, int quoteStart, char quote)
+  {
+    var activeQuote = quote;
+    for (var i = quoteStart + 1; i < span.Length; i++)
     {
       var ch = span[i];
-      if (quote != '\0')
+      if (activeQuote != '\0')
       {
-        if (ch == quote) quote = '\0';
+        if (ch == activeQuote)
+          activeQuote = '\0';
+
         continue;
       }
 
-      if (ch is '"' or '\'') { quote = ch; continue; }
+      if (ch is '"' or '\'')
+      {
+        activeQuote = ch;
+        continue;
+      }
+
       if (ch == ']') return i;
     }
 

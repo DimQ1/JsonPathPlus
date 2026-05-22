@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 
 namespace JsonPathPlus;
 
@@ -106,13 +105,17 @@ internal static class JsonPathParser
     var inner = path[1..close];
     path = path[(close + 1)..];
 
-    if (inner.SequenceEqual("*"))
+    if (inner.Length == 1 && inner[0] == '*')
       segments.Add(new JsonPathSegment(null, -1, -1, JsonPathSegmentType.Wildcard));
     else if (TryParseFilter(inner, out var filterExpression))
       segments.Add(new JsonPathSegment(null, -1, -1, JsonPathSegmentType.Filter, null, null, filterExpression));
     else if (TryParseComputedIndex(inner, out var computedExpression))
       segments.Add(new JsonPathSegment(null, -1, -1, JsonPathSegmentType.ComputedIndex, null, null, null, computedExpression));
-    else if (TryParseNestedQuery(inner, out var nestedBranches))
+    else if (IsArrayRangeCandidate(inner) && TryParseArrayRange(inner, out var rangeStart, out var rangeEnd))
+      segments.Add(new JsonPathSegment(null, rangeStart, rangeEnd, JsonPathSegmentType.ArrayRange));
+    else if (IsIntegerCandidate(inner) && int.TryParse(inner, out var idx))
+      segments.Add(new JsonPathSegment(null, idx, -1, JsonPathSegmentType.ArrayIndex));
+    else if (inner.IndexOf('[') >= 0 && TryParseNestedQuery(inner, out var nestedBranches))
       segments.Add(new JsonPathSegment(null, -1, -1, JsonPathSegmentType.NestedQuery, null, null, null, null, null, nestedBranches));
     else if (TryParseUnion(inner, out var indexUnion, out var propertyUnion))
     {
@@ -129,11 +132,30 @@ internal static class JsonPathParser
       segments.Add(new JsonPathSegment(null, -1, -1, JsonPathSegmentType.FieldExclusion, null, null, null, null, exclusionFields));
     else if (TryParseFieldProjection(inner, out var projectionFields))
       segments.Add(new JsonPathSegment(null, -1, -1, JsonPathSegmentType.FieldProjection, null, null, null, null, projectionFields));
-    else if (TryParseArrayRange(inner, out var rangeStart, out var rangeEnd))
-      segments.Add(new JsonPathSegment(null, rangeStart, rangeEnd, JsonPathSegmentType.ArrayRange));
-    else if (int.TryParse(inner, out var idx))
-      segments.Add(new JsonPathSegment(null, idx, -1, JsonPathSegmentType.ArrayIndex));
   }
+
+  private static bool IsArrayRangeCandidate(ReadOnlySpan<char> value)
+  {
+    var trimmed = value.Trim();
+    if (trimmed.Length == 0 || trimmed.IndexOf(':') < 0)
+      return false;
+
+    var first = trimmed[0];
+    return first == ':' || first == '-' || IsAsciiDigit(first);
+  }
+
+  private static bool IsIntegerCandidate(ReadOnlySpan<char> value)
+  {
+    var trimmed = value.Trim();
+    if (trimmed.Length == 0)
+      return false;
+
+    var first = trimmed[0];
+    return first == '-' || IsAsciiDigit(first);
+  }
+
+  private static bool IsAsciiDigit(char value)
+    => value >= '0' && value <= '9';
 
   private static bool TryParseUnion(ReadOnlySpan<char> unionStr, out int[]? indexUnion, out string[]? propertyUnion)
   {

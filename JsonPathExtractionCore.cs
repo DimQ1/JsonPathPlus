@@ -5,9 +5,11 @@ namespace JsonPathPlus;
 
 internal static class JsonPathExtractionCore
 {
+  private static readonly List<JsonPathSegment> EmptySegments = new(0);
+
   public static List<JsonPathSegment> ParseSegments(string? selectToken)
-    => selectToken is null
-      ? new List<JsonPathSegment>()
+    => string.IsNullOrEmpty(selectToken) || selectToken == "$"
+      ? EmptySegments
       : JsonPathParser.Parse(selectToken);
 
   public static JsonNode? FindFirstMatch(JsonNode? root, List<JsonPathSegment> segments)

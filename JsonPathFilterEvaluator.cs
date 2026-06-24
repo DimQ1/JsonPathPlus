@@ -11,20 +11,27 @@ internal static class JsonPathFilterEvaluator
 
   public static bool Evaluate(JsonNode? candidate, string expression)
   {
-    var expr = expression.Trim();
-    if (expr.Length == 0)
+    if (string.IsNullOrEmpty(expression))
+      return false;
+
+    return EvaluateSpan(candidate, expression.AsSpan().Trim());
+  }
+
+  private static bool EvaluateSpan(JsonNode? candidate, ReadOnlySpan<char> expr)
+  {
+    if (expr.IsEmpty)
       return false;
 
     var orIndex = FindTopLevelOperator(expr, "||");
     if (orIndex >= 0)
-      return Evaluate(candidate, expr[..orIndex]) || Evaluate(candidate, expr[(orIndex + 2)..]);
+      return EvaluateSpan(candidate, expr[..orIndex]) || EvaluateSpan(candidate, expr[(orIndex + 2)..]);
 
     var andIndex = FindTopLevelOperator(expr, "&&");
     if (andIndex >= 0)
-      return Evaluate(candidate, expr[..andIndex]) && Evaluate(candidate, expr[(andIndex + 2)..]);
+      return EvaluateSpan(candidate, expr[..andIndex]) && EvaluateSpan(candidate, expr[(andIndex + 2)..]);
 
     if (expr[0] == '!')
-      return !Evaluate(candidate, expr[1..]);
+      return !EvaluateSpan(candidate, expr[1..]);
 
     foreach (var op in ComparisonOperators)
     {
@@ -32,18 +39,18 @@ internal static class JsonPathFilterEvaluator
       if (idx < 0)
         continue;
 
-      var left = expr[..idx].Trim();
-      var right = expr[(idx + op.Length)..].Trim();
+      var leftSpan = expr[..idx].Trim();
+      var rightSpan = expr[(idx + op.Length)..].Trim();
 
-      var leftValue = ResolveOperand(candidate, left, out var leftExists);
-      var rightValue = ResolveOperand(candidate, right, out var rightExists);
+      var leftValue = ResolveOperandSpan(candidate, leftSpan, out var leftExists);
+      var rightValue = ResolveOperandSpan(candidate, rightSpan, out var rightExists);
       if (!leftExists || !rightExists)
         return false;
 
       return Compare(leftValue, rightValue, op);
     }
 
-    _ = ResolveOperand(candidate, expr, out var exists);
+    _ = ResolveOperandSpan(candidate, expr, out var exists);
     return exists;
   }
 
@@ -85,6 +92,65 @@ internal static class JsonPathFilterEvaluator
     }
 
     return -1;
+  }
+
+  private static object? ResolveOperandSpan(JsonNode? candidate, ReadOnlySpan<char> token, out bool exists)
+  {
+    if (token.StartsWith("@."))
+      return ResolvePath(candidate, token[2..].ToString(), out exists);
+
+    if (token.SequenceEqual("@"))
+    {
+      exists = candidate is not null;
+      return ToPrimitive(candidate);
+    }
+
+    if (token.Length >= 2 && token[0] == '"' && token[^1] == '"')
+    {
+      exists = true;
+      return token[1..^1].ToString();
+    }
+
+    if (token.Length >= 2 && token[0] == '\'' && token[^1] == '\'')
+    {
+      exists = true;
+      return token[1..^1].ToString();
+    }
+
+    if (MemoryExtensions.Equals(token, "true", StringComparison.OrdinalIgnoreCase))
+    {
+      exists = true;
+      return true;
+    }
+
+    if (MemoryExtensions.Equals(token, "false", StringComparison.OrdinalIgnoreCase))
+    {
+      exists = true;
+      return false;
+    }
+
+    if (MemoryExtensions.Equals(token, "null", StringComparison.OrdinalIgnoreCase))
+    {
+      exists = true;
+      return null;
+    }
+
+    // Fast guard: decimal.TryParse is expensive — skip it for tokens that cannot be numbers.
+    if (token.IsEmpty || !IsNumberStart(token[0]))
+    {
+      exists = false;
+      return null;
+    }
+
+    // decimal.TryParse requires a string — allocate only when needed.
+    if (decimal.TryParse(token.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var number))
+    {
+      exists = true;
+      return number;
+    }
+
+    exists = false;
+    return null;
   }
 
   private static object? ResolveOperand(JsonNode? candidate, string token, out bool exists)

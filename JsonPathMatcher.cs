@@ -26,13 +26,21 @@ internal static class JsonPathMatcher
   public static List<JsonNode?> FindMatches(JsonNode? root, List<JsonPathSegment> segments, int startIndex)
   {
     var current = new List<JsonNode?> { root };
+    if (startIndex >= segments.Count)
+      return current;
+
+    var next = new List<JsonNode?>(current.Count);
 
     for (var segmentIndex = startIndex; segmentIndex < segments.Count; segmentIndex++)
     {
       var segment = segments[segmentIndex];
-      current = FindSegmentMatches(current, segment);
-      if (current.Count == 0)
-        break;
+      FindSegmentMatchesInto(current, segment, next);
+      if (next.Count == 0)
+        return next;
+
+      // Swap lists to avoid allocations on each segment step.
+      (current, next) = (next, current);
+      next.Clear();
     }
 
     return current;
@@ -51,28 +59,43 @@ internal static class JsonPathMatcher
     string rootPath = "$")
   {
     var current = new List<MatchContext> { new(root, rootPath) };
+    if (startIndex >= segments.Count)
+    {
+      var immediate = new List<JsonPathMatch>(1) { new(rootPath, root) };
+      return immediate;
+    }
+
+    var next = new List<MatchContext>(current.Count);
 
     for (var segmentIndex = startIndex; segmentIndex < segments.Count; segmentIndex++)
     {
       var segment = segments[segmentIndex];
-      current = FindSegmentMatchesWithPaths(current, segment);
-      if (current.Count == 0)
-        break;
+      FindSegmentMatchesWithPathsInto(current, segment, next);
+      if (next.Count == 0)
+        return ConvertToMatches(next);
+
+      // Swap lists to avoid allocations on each segment step.
+      (current, next) = (next, current);
+      next.Clear();
     }
 
-    var results = new List<JsonPathMatch>(current.Count);
-    foreach (var context in current)
+    return ConvertToMatches(current);
+  }
+
+  private static List<JsonPathMatch> ConvertToMatches(List<MatchContext> contexts)
+  {
+    var results = new List<JsonPathMatch>(contexts.Count);
+    foreach (var context in contexts)
       results.Add(new JsonPathMatch(context.Path, context.Node));
 
     return results;
   }
 
-  private static List<JsonNode?> FindSegmentMatches(
-    IEnumerable<JsonNode?> current,
-    JsonPathSegment segment)
+  private static void FindSegmentMatchesInto(
+    List<JsonNode?> current,
+    JsonPathSegment segment,
+    List<JsonNode?> results)
   {
-    var results = new List<JsonNode?>();
-
     foreach (var node in current)
     {
       switch (segment.SegmentType)
@@ -134,8 +157,6 @@ internal static class JsonPathMatcher
           break;
       }
     }
-
-    return results;
   }
 
   private static bool TryFindFirstMatch(
@@ -515,11 +536,11 @@ internal static class JsonPathMatcher
     return false;
   }
 
-  private static List<MatchContext> FindSegmentMatchesWithPaths(
-    IEnumerable<MatchContext> current,
-    JsonPathSegment segment)
+  private static void FindSegmentMatchesWithPathsInto(
+    List<MatchContext> current,
+    JsonPathSegment segment,
+    List<MatchContext> results)
   {
-    var results = new List<MatchContext>();
 
     foreach (var context in current)
     {
@@ -582,8 +603,6 @@ internal static class JsonPathMatcher
           break;
       }
     }
-
-    return results;
   }
 
   private static void CollectPropertyMatches(JsonNode? node, string propertyName, List<JsonNode?> results)

@@ -165,14 +165,19 @@ internal static class JsonPathParser
     if (unionStr.IndexOf(',') < 0)
       return false;
 
-    var parts = unionStr.ToString().Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-    if (parts.Length == 0)
-      return false;
-
-    var indices = new List<int>(parts.Length);
-    foreach (var part in parts)
+    // Count parts to pre-size collections.
+    var partCount = 1;
+    for (var i = 0; i < unionStr.Length; i++)
     {
-      if (!int.TryParse(part, out var value))
+      if (unionStr[i] == ',')
+        partCount++;
+    }
+
+    // First pass: try integer indices.
+    var indices = new List<int>(partCount);
+    foreach (var slice in SplitAndTrim(unionStr, ','))
+    {
+      if (!int.TryParse(slice, out var value))
       {
         indices.Clear();
         break;
@@ -181,30 +186,76 @@ internal static class JsonPathParser
       indices.Add(value);
     }
 
-    if (indices.Count == parts.Length)
+    if (indices.Count > 0)
     {
       indexUnion = indices.ToArray();
       return true;
     }
 
-    // Property union requires quoted strings
-    propertyUnion = new string[parts.Length];
-    for (int i = 0; i < parts.Length; i++)
+    // Second pass: property union (quoted strings).
+    propertyUnion = new string[partCount];
+    var idx = 0;
+    foreach (var slice in SplitAndTrim(unionStr, ','))
     {
-      var p = parts[i];
+      if (slice.IsEmpty)
+        return false;
+
       // Must start and end with quotes
-      if ((p.StartsWith('"') && p.EndsWith('"')) || (p.StartsWith('\'') && p.EndsWith('\'')))
+      if ((slice[0] == '"' && slice[^1] == '"') || (slice[0] == '\'' && slice[^1] == '\''))
       {
-        propertyUnion[i] = p[1..^1]; // Remove quotes
+        propertyUnion[idx++] = slice[1..^1].ToString();
       }
       else
       {
-        // Not quoted - not a valid property union
         return false;
       }
     }
 
-    return propertyUnion.Length > 0;
+    return idx > 0;
+  }
+
+  /// <summary>
+  /// Yields trimmed spans around the separator without allocating strings.
+  /// </summary>
+  private static ReadOnlySpanSplitter SplitAndTrim(ReadOnlySpan<char> source, char separator)
+    => new(source, separator);
+
+  private ref struct ReadOnlySpanSplitter
+  {
+    private ReadOnlySpan<char> _remaining;
+    private readonly char _separator;
+
+    public ReadOnlySpanSplitter(ReadOnlySpan<char> source, char separator)
+    {
+      _remaining = source;
+      _separator = separator;
+    }
+
+    public ReadOnlySpanSplitter GetEnumerator() => this;
+
+    public ReadOnlySpan<char> Current { get; private set; }
+
+    public bool MoveNext()
+    {
+      while (_remaining.Length > 0)
+      {
+        var commaIndex = _remaining.IndexOf(_separator);
+        if (commaIndex < 0)
+        {
+          Current = _remaining.Trim();
+          _remaining = default;
+          return Current.Length > 0;
+        }
+
+        Current = _remaining[..commaIndex].Trim();
+        _remaining = _remaining[(commaIndex + 1)..];
+        if (Current.Length > 0)
+          return true;
+        // Skip empty entries (consecutive separators).
+      }
+
+      return false;
+    }
   }
 
   private static bool TryParseNestedQuery(ReadOnlySpan<char> inner, out NestedQueryBranch[]? branches)
@@ -330,29 +381,24 @@ internal static class JsonPathParser
     if (exclusionStr.Length == 0 || exclusionStr[0] != '!')
       return false;
 
-    var parts = exclusionStr.ToString().Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-    if (parts.Length == 0)
-      return false;
-
-    var fieldList = new List<string>(parts.Length);
-    
-    foreach (var part in parts)
+    var fieldList = new List<string>();
+    foreach (var part in SplitAndTrim(exclusionStr, ','))
     {
       // Must start with '!' for exclusion
-      if (!part.StartsWith('!'))
+      if (part.Length == 0 || part[0] != '!')
         return false;
-      
+
       var fieldName = part[1..]; // Remove the '!' prefix
-      
+
       // Skip if it's a number (that's for array union)
       if (int.TryParse(fieldName, out _))
         return false;
-      
-      // Check if it's a valid identifier (alphanumeric + underscore, not starting with digit)
-      if (!IsValidIdentifier(fieldName))
+
+      // Check if it's a valid identifier
+      if (!IsValidIdentifierSpan(fieldName))
         return false;
-      
-      fieldList.Add(fieldName);
+
+      fieldList.Add(fieldName.ToString());
     }
 
     if (fieldList.Count > 0)
@@ -371,27 +417,22 @@ internal static class JsonPathParser
     if (projectionStr.Length == 0)
       return false;
 
-    var parts = projectionStr.ToString().Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
-    if (parts.Length == 0)
-      return false;
-
-    var fieldList = new List<string>(parts.Length);
-    
-    foreach (var part in parts)
+    var fieldList = new List<string>();
+    foreach (var part in SplitAndTrim(projectionStr, ','))
     {
       // Skip if it's quoted (that's for property union)
-      if (part.StartsWith('"') || part.StartsWith('\''))
+      if (part[0] == '"' || part[0] == '\'')
         return false;
-      
+
       // Skip if it's a number (that's for array union)
       if (int.TryParse(part, out _))
         return false;
-      
-      // Check if it's a valid identifier (alphanumeric + underscore, not starting with digit)
-      if (!IsValidIdentifier(part))
+
+      // Check if it's a valid identifier
+      if (!IsValidIdentifierSpan(part))
         return false;
-      
-      fieldList.Add(part);
+
+      fieldList.Add(part.ToString());
     }
 
     if (fieldList.Count > 0)
@@ -440,6 +481,25 @@ internal static class JsonPathParser
       return false;
 
     fieldName = field;
+    return true;
+  }
+
+  private static bool IsValidIdentifierSpan(ReadOnlySpan<char> name)
+  {
+    if (name.IsEmpty)
+      return false;
+
+    // First character must be letter or underscore
+    if (!char.IsLetter(name[0]) && name[0] != '_')
+      return false;
+
+    // Remaining characters must be letters, digits, or underscores
+    for (int i = 1; i < name.Length; i++)
+    {
+      if (!char.IsLetterOrDigit(name[i]) && name[i] != '_')
+        return false;
+    }
+
     return true;
   }
 

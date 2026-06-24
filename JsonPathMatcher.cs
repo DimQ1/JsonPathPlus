@@ -481,15 +481,38 @@ internal static class JsonPathMatcher
       return true;
 
     var excludedObject = new JsonObject();
-    var excludeSet = new HashSet<string>(fields);
 
-    foreach (var prop in obj)
+    // For small field sets (<= 3), linear scan avoids HashSet allocation.
+    if (fields.Length <= 3)
     {
-      if (!excludeSet.Contains(prop.Key))
-        excludedObject[prop.Key] = prop.Value?.DeepClone();
+      foreach (var prop in obj)
+      {
+        if (!ContainsLinear(fields, prop.Key))
+          excludedObject[prop.Key] = prop.Value?.DeepClone();
+      }
+    }
+    else
+    {
+      var excludeSet = new HashSet<string>(fields);
+      foreach (var prop in obj)
+      {
+        if (!excludeSet.Contains(prop.Key))
+          excludedObject[prop.Key] = prop.Value?.DeepClone();
+      }
     }
 
     return visit(excludedObject);
+  }
+
+  private static bool ContainsLinear(string[] fields, string key)
+  {
+    foreach (var f in fields)
+    {
+      if (f == key)
+        return true;
+    }
+
+    return false;
   }
 
   private static List<MatchContext> FindSegmentMatchesWithPaths(

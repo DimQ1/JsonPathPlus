@@ -12,7 +12,7 @@ namespace JsonPathPlus;
 internal sealed class ReadOnlyMemoryStream : Stream
 {
   private readonly ReadOnlyMemory<byte> _memory;
-  private int _position;
+  private long _position;
 
   public ReadOnlyMemoryStream(ReadOnlyMemory<byte> memory)
   {
@@ -32,17 +32,17 @@ internal sealed class ReadOnlyMemoryStream : Stream
     {
       if (value < 0 || value > _memory.Length)
         throw new ArgumentOutOfRangeException(nameof(value));
-      _position = (int)value;
+      _position = value;
     }
   }
 
   public override int Read(byte[] buffer, int offset, int count)
   {
-    var available = _memory.Length - _position;
+    var available = (int)(_memory.Length - _position);
     var bytesToCopy = Math.Min(available, count);
     if (bytesToCopy == 0) return 0;
 
-    _memory.Span.Slice(_position, bytesToCopy).CopyTo(buffer.AsSpan(offset));
+    _memory.Span.Slice((int)_position, bytesToCopy).CopyTo(buffer.AsSpan(offset));
     _position += bytesToCopy;
     return bytesToCopy;
   }
@@ -57,11 +57,11 @@ internal sealed class ReadOnlyMemoryStream : Stream
   {
     cancellationToken.ThrowIfCancellationRequested();
 
-    var available = _memory.Length - _position;
+    var available = (int)(_memory.Length - _position);
     var bytesToCopy = Math.Min(available, buffer.Length);
     if (bytesToCopy == 0) return ValueTask.FromResult(0);
 
-    _memory.Span.Slice(_position, bytesToCopy).CopyTo(buffer.Span);
+    _memory.Span.Slice((int)_position, bytesToCopy).CopyTo(buffer.Span);
     _position += bytesToCopy;
     return ValueTask.FromResult(bytesToCopy);
   }
@@ -79,7 +79,7 @@ internal sealed class ReadOnlyMemoryStream : Stream
     if (newPosition < 0 || newPosition > _memory.Length)
       throw new ArgumentOutOfRangeException(nameof(offset));
 
-    _position = (int)newPosition;
+    _position = newPosition;
     return _position;
   }
 

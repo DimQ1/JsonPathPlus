@@ -130,6 +130,13 @@ internal static class JsonPathFilterEvaluator
       return null;
     }
 
+    // Fast guard: decimal.TryParse is expensive — skip it for tokens that cannot be numbers.
+    if (token.Length > 0 && !IsNumberStart(token[0]))
+    {
+      exists = false;
+      return null;
+    }
+
     if (decimal.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out var number))
     {
       exists = true;
@@ -296,4 +303,7 @@ internal static class JsonPathFilterEvaluator
         return false;
     }
   }
+
+  private static bool IsNumberStart(char c)
+    => c == '-' || (c >= '0' && c <= '9');
 }

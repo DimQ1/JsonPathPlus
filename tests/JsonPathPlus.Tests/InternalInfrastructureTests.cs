@@ -117,7 +117,7 @@ public sealed class InternalInfrastructureTests
     cts.Cancel();
 
     await Assert.ThrowsAsync<OperationCanceledException>(() => stream.ReadAsync(new byte[2], 0, 2, cts.Token));
-    await Assert.ThrowsAsync<OperationCanceledException>(async () => await stream.ReadAsync(new byte[2].AsMemory(0, 2), cts.Token));
+    await Assert.ThrowsAsync<OperationCanceledException>(async () => await stream.ReadExactlyAsync(new byte[2].AsMemory(0, 2), cts.Token));
   }
 
   [Fact]

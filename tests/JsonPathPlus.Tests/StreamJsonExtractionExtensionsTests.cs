@@ -1242,6 +1242,29 @@ public sealed class StreamJsonExtractionExtensionsTests
   }
 
   [Fact]
+  public async Task ExtractAllJsonMatchesAsync_WithNestedQuery_OmitsKeyWhenFieldProjectionMatchesNothing()
+  {
+    // Regression: FieldProjection inside a NestedQuery branch that matches
+    // no fields should omit the key (not produce an empty {}).
+    // SampleJson.obj = { "p1": "v1", "p2": "v2" }
+    // obj[nonexistent] should find nothing and the key should be omitted.
+    using var stream = CreateStream(SampleJson);
+
+    var results = await CollectAsync(
+      stream.ExtractAllJsonMatchesAsync("$[obj[nonexistent], name]"));
+
+    Assert.Single(results);
+    var resultObj = results[0] as JsonObject;
+    Assert.NotNull(resultObj);
+
+    // name should be present
+    Assert.Equal("rootName", resultObj!["name"]?.GetValue<string>());
+
+    // obj should be absent because field projection found nothing
+    Assert.False(resultObj!.ContainsKey("obj"));
+  }
+
+  [Fact]
   public async Task ExtractAllJsonMatchesAsync_WithNestedQuery_ReturnsSingleItemWithoutArrayWrapping()
   {
     using var stream = CreateStream(SampleJson);

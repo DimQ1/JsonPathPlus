@@ -493,6 +493,10 @@ internal static class JsonPathMatcher
         projectedObject[field] = value?.DeepClone();
     }
 
+    // Skip empty projection when no requested fields exist on the object.
+    if (projectedObject.Count == 0)
+      return true;
+
     return visit(projectedObject);
   }
 
@@ -784,7 +788,9 @@ internal static class JsonPathMatcher
       }
     }
 
-    results.Add(projectedObject);
+    // Skip empty projection when no requested fields exist on the object.
+    if (projectedObject.Count > 0)
+      results.Add(projectedObject);
   }
 
   private static void CollectNestedQueryMatches(JsonNode? node, NestedQueryBranch[]? branches, List<JsonNode?> results)
@@ -1149,7 +1155,8 @@ internal static class JsonPathMatcher
       }
     }
 
-    return projectedObject;
+    // Skip empty projection when no requested fields exist on the object.
+    return projectedObject.Count > 0 ? projectedObject : null;
   }
 
   private static void CollectFieldExclusionMatchesWithPaths(MatchContext context, string[]? fields, List<MatchContext> results)

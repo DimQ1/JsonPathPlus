@@ -155,6 +155,10 @@ internal static class JsonPathMatcher
         case JsonPathSegmentType.FieldCount:
           CollectFieldCountMatches(node, segment.PropertyName, results);
           break;
+
+        case JsonPathSegmentType.Schema:
+          CollectSchemaMatch(node, results);
+          break;
       }
     }
   }
@@ -417,6 +421,10 @@ internal static class JsonPathMatcher
         var nestedMatch = BuildNestedQueryResult(nestedObj, segment.NestedQueryBranches);
         return nestedMatch is null || visit(nestedMatch);
 
+      case JsonPathSegmentType.Schema:
+        var schemaNode = JsonPathSchemaGenerator.GenerateSchema(node);
+        return schemaNode is null || visit(schemaNode);
+
       default:
         return true;
     }
@@ -604,6 +612,10 @@ internal static class JsonPathMatcher
 
         case JsonPathSegmentType.FieldCount:
           CollectFieldCountMatchesWithPaths(context, segment.PropertyName, results);
+          break;
+
+        case JsonPathSegmentType.Schema:
+          CollectSchemaMatchWithPath(context, results);
           break;
       }
     }
@@ -941,6 +953,13 @@ internal static class JsonPathMatcher
     results.Add(JsonValue.Create(count));
   }
 
+  private static void CollectSchemaMatch(JsonNode? node, List<JsonNode?> results)
+  {
+    var schema = JsonPathSchemaGenerator.GenerateSchema(node);
+    if (schema is not null)
+      results.Add(schema);
+  }
+
   private static bool AnyItemContainsField(JsonArray array, string fieldName)
   {
     foreach (var item in array)
@@ -1255,6 +1274,13 @@ internal static class JsonPathMatcher
     };
 
     results.Add(new MatchContext(JsonValue.Create(count), context.Path));
+  }
+
+  private static void CollectSchemaMatchWithPath(MatchContext context, List<MatchContext> results)
+  {
+    var schema = JsonPathSchemaGenerator.GenerateSchema(context.Node);
+    if (schema is not null)
+      results.Add(new MatchContext(schema, context.Path));
   }
 
   private static string AppendPropertyPath(string parentPath, string propertyName)

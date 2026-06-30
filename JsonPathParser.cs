@@ -31,6 +31,9 @@ internal static class JsonPathParser
         continue;
       }
 
+      if (TryParseSchemaFunction(ref path, segments))
+        continue;
+
       ParsePropertySegment(ref path, segments);
     }
 
@@ -105,7 +108,9 @@ internal static class JsonPathParser
     var inner = path[1..close];
     path = path[(close + 1)..];
 
-    if (inner.Length == 1 && inner[0] == '*')
+    if (TryParseSchemaFunctionInner(inner))
+      segments.Add(new JsonPathSegment(null, -1, -1, JsonPathSegmentType.Schema));
+    else if (inner.Length == 1 && inner[0] == '*')
       segments.Add(new JsonPathSegment(null, -1, -1, JsonPathSegmentType.Wildcard));
     else if (TryParseFilter(inner, out var filterExpression))
       segments.Add(new JsonPathSegment(null, -1, -1, JsonPathSegmentType.Filter, null, null, filterExpression));
@@ -568,6 +573,29 @@ internal static class JsonPathParser
 
       path = end < 0 ? ReadOnlySpan<char>.Empty : path[end..];
     }
+  }
+
+  private static bool TryParseSchemaFunction(
+    ref ReadOnlySpan<char> path,
+    List<JsonPathSegment> segments)
+  {
+    const string schemaFunc = "schema()";
+    if (!path.StartsWith(schemaFunc.AsSpan(), StringComparison.Ordinal))
+      return false;
+
+    path = path[schemaFunc.Length..];
+    segments.Add(new JsonPathSegment(null, -1, -1, JsonPathSegmentType.Schema));
+    return true;
+  }
+
+  private static bool TryParseSchemaFunctionInner(ReadOnlySpan<char> inner)
+  {
+    var trimmed = inner.Trim();
+    const string schemaFunc = "schema()";
+    if (!trimmed.Equals(schemaFunc.AsSpan(), StringComparison.Ordinal))
+      return false;
+
+    return true;
   }
 
   private static bool TryParseArrayRange(ReadOnlySpan<char> rangeStr, out int start, out int end)

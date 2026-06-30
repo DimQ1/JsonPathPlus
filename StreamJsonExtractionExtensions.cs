@@ -171,6 +171,73 @@ public static class StreamJsonExtractionExtensions
     }
   }
 
+  // ── JSON Schema Extraction ──────────────────────────────────────────────
+
+  /// <summary>
+  /// Generates a JSON Schema for the data at <paramref name="selectToken"/> by inspecting
+  /// the JSON structure in <paramref name="stream"/>. When the path matches multiple values
+  /// (e.g. wildcards, ranges), their schemas are merged into a single schema.
+  /// <para>
+  /// Example: <c>stream.ExtractJsonSchemaAsync("$.items[*]")</c> returns the schema of array items.
+  /// </para>
+  /// </summary>
+  /// <param name="stream">The JSON stream to read from.</param>
+  /// <param name="selectToken">JSONPath-like token path, or <c>null</c>/<c>"$"</c> for the entire document.</param>
+  /// <returns>A JSON Schema object (<see cref="JsonObject"/>) representing the inferred structure.</returns>
+  public static async Task<JsonNode?> ExtractJsonSchemaAsync(
+    this Stream stream, string? selectToken, CancellationToken cancellationToken = default)
+    => await stream.ExtractJsonSchemaAsync(selectToken, default, cancellationToken);
+
+  /// <summary>
+  /// Generates a JSON Schema for the data at <paramref name="selectToken"/> with extraction
+  /// options that control full-parse fallback size limits.
+  /// </summary>
+  /// <param name="stream">The JSON stream to read from.</param>
+  /// <param name="selectToken">JSONPath-like token path.</param>
+  /// <param name="options">Extraction options.</param>
+  /// <returns>A merged JSON Schema object.</returns>
+  public static async Task<JsonNode?> ExtractJsonSchemaAsync(
+    this Stream stream,
+    string? selectToken,
+    JsonPathExtractionOptions options,
+    CancellationToken cancellationToken = default)
+  {
+    ArgumentNullException.ThrowIfNull(stream);
+    cancellationToken.ThrowIfCancellationRequested();
+
+    var matches = new List<JsonNode?>();
+    await foreach (var match in stream.ExtractAllJsonMatchesAsync(selectToken, options, cancellationToken))
+      matches.Add(match);
+
+    return JsonPathSchemaGenerator.MergeSchemas(matches);
+  }
+
+  /// <summary>
+  /// Generates a JSON Schema for the data at <paramref name="selectToken"/> from a
+  /// <see cref="JsonNode"/>.
+  /// </summary>
+  public static JsonNode? ExtractJsonSchema(this JsonNode? node, string? selectToken)
+  {
+    var matches = new List<JsonNode?>();
+    foreach (var match in JsonPathExtractionCore.FindAllMatches(node, JsonPathExtractionCore.ParseSegments(selectToken)))
+      matches.Add(match);
+
+    return JsonPathSchemaGenerator.MergeSchemas(matches);
+  }
+
+  /// <summary>
+  /// Generates a JSON Schema for the data at <paramref name="selectToken"/> from a raw
+  /// JSON string.
+  /// </summary>
+  public static async Task<JsonNode?> ExtractJsonSchemaAsync(
+    this string json, string? selectToken, CancellationToken cancellationToken = default)
+  {
+    ArgumentNullException.ThrowIfNull(json);
+
+    using var rented = RentUtf8Stream(json);
+    return await rented.Stream.ExtractJsonSchemaAsync(selectToken, cancellationToken);
+  }
+
   /// <summary>
   /// Returns the first JSON match for <paramref name="node"/> at <paramref name="selectToken"/>.
   /// </summary>

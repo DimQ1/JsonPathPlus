@@ -119,6 +119,8 @@ git push -u origin release_1.0.0
 | Field inclusion projection | `$.books[title, author]` | Include only specified fields in result objects | ✅ Implemented |
 | Field exclusion | `$.books[!title, !price]` | Exclude specified fields from result objects | ✅ Implemented |
 | Nested query | `$.store[book[?(@.price<20)][title,author], bicycle[color], name]` | Apply sub-paths per key and combine into a result object | ✅ Implemented |
+| Schema (dot) | `$.items.schema()` | Generate JSON Schema for matched data | ✅ Implemented |
+| Schema (bracket) | `$.items[schema()]` | Generate JSON Schema for matched data | ✅ Implemented |
 
 ## API reference
 
@@ -142,6 +144,12 @@ IAsyncEnumerable<JsonPathMatch> ExtractAllJsonMatchesWithPathsAsync(this JsonNod
 Task<JsonNode?> ExtractFirstJsonMatchAsync(this string json, string? selectToken, CancellationToken cancellationToken = default)
 IAsyncEnumerable<JsonNode?> ExtractAllJsonMatchesAsync(this string json, string? selectToken, CancellationToken cancellationToken = default)
 IAsyncEnumerable<JsonPathMatch> ExtractAllJsonMatchesWithPathsAsync(this string json, string? selectToken, CancellationToken cancellationToken = default)
+
+// JSON Schema extraction
+Task<JsonNode?> ExtractJsonSchemaAsync(this Stream stream, string? selectToken, CancellationToken cancellationToken = default)
+Task<JsonNode?> ExtractJsonSchemaAsync(this Stream stream, string? selectToken, JsonPathExtractionOptions options, CancellationToken cancellationToken = default)
+JsonNode? ExtractJsonSchema(this JsonNode? node, string? selectToken)
+Task<JsonNode?> ExtractJsonSchemaAsync(this string json, string? selectToken, CancellationToken cancellationToken = default)
 ```
 
 Passing `null` or `"$"` as `selectToken` returns the entire document.
@@ -244,6 +252,49 @@ Each key in the bracket expression can have its own sub-path (filters, projectio
 - Sub-paths that match nothing cause the key to be omitted.
 - A single sub-path match is kept as-is; multiple matches are collected into an array.
 - Nested query is triggered when at least one branch has bracket-delimited sub-paths; otherwise, it falls through to existing segment types (field projection, property union, etc.).
+
+### JSON Schema extraction
+
+Generate a JSON Schema (draft-07 compatible) from JSON data by path. The schema infers types, properties, and structure from the matched data.
+
+```csharp
+// Get schema of the entire document
+JsonNode? schema = await stream.ExtractJsonSchemaAsync("$");
+
+// Get schema of array items (schemas from all items are merged)
+JsonNode? itemSchema = await stream.ExtractJsonSchemaAsync("$.items[*]");
+// → { "type": "object", "properties": { "id": { "type": "number" }, "value": { "type": "string" } }, "required": ["id", "value"] }
+
+// Get schema of a specific property
+JsonNode? nameSchema = await stream.ExtractJsonSchemaAsync("$.name");
+// → { "type": "string" }
+```
+
+**Using the `schema()` path function** — generates a schema inline in the extraction pipeline:
+
+```csharp
+// schema() as a path segment
+JsonNode? schema = await stream.ExtractFirstJsonMatchAsync("$.items.schema()");
+
+// With wildcards — each match gets its own schema
+await foreach (var s in stream.ExtractAllJsonMatchesAsync("$.items[*].schema()"))
+    Console.WriteLine(s);
+```
+
+**Schema merging behavior:**
+- Same-type values merge into a unified schema (e.g., multiple objects merge their properties)
+- Mixed types produce a `oneOf` union
+- Required fields are those present in all merged object schemas
+- Empty arrays/objects produce `{ "type": "array" }` / `{ "type": "object" }` without nested details
+
+| Input type | Output schema |
+|---|---|
+| String | `{ "type": "string" }` |
+| Number | `{ "type": "number" }` |
+| Boolean | `{ "type": "boolean" }` |
+| Null | `{ "type": "null" }` |
+| Object | `{ "type": "object", "properties": {...}, "required": [...] }` |
+| Array | `{ "type": "array", "items": <merged schema> }` |
 
 ## Malformed path behavior
 

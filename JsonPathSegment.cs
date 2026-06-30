@@ -34,5 +34,6 @@ internal enum JsonPathSegmentType
   FieldExclusion,
   FieldExistence,
   FieldCount,
-  NestedQuery
+  NestedQuery,
+  Schema
 }

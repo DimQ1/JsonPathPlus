@@ -34,6 +34,9 @@ public sealed class JsonPathValidatorTests
   [InlineData("$..")]               // double dot with no name — lenient
   [InlineData("$$")]                // $ as property name — lenient, just won't match
   [InlineData("$.items[?(@.name == \"[bracket]\")]")] // ] inside quoted string
+  [InlineData("$.items[schema()]")]  // schema function in brackets
+  [InlineData("$.items.schema()")]   // schema function via dot notation
+  [InlineData("$.schema()")]         // schema at root
   public void Validate_ValidPath_ReturnsIsValidTrue(string? path)
   {
     var result = JsonPathValidator.Validate(path);
@@ -54,6 +57,9 @@ public sealed class JsonPathValidatorTests
   [InlineData("$.store.book[?(@.price < 20)][count(title)]")]
   [InlineData("$.store.book[?(@.price < 20)][exist(*)]")]
   [InlineData("$.store.book[?(@.price < 20)][count(*)]")]
+  [InlineData("$.items[schema()]")]
+  [InlineData("$.data.schema()")]
+  [InlineData("$.schema()")]
   public void IsValid_ValidPath_ReturnsTrue(string? path)
   {
     Assert.True(JsonPathValidator.IsValid(path));

@@ -90,6 +90,9 @@ public static class JsonPathValidator
     if (inner.IsEmpty)
       return true;
 
+    if (IsSchemaFunction(inner))
+      return true;
+
     if (inner[0] == '?' && inner.Length >= 2 && inner[1] == '(')
     {
       if (inner[^1] != ')')
@@ -156,6 +159,13 @@ public static class JsonPathValidator
     }
 
     return true;
+  }
+
+  private static bool IsSchemaFunction(ReadOnlySpan<char> inner)
+  {
+    var trimmed = inner.Trim();
+    const string schemaFunc = "schema()";
+    return trimmed.Equals(schemaFunc.AsSpan(), StringComparison.Ordinal);
   }
 
   /// <summary>

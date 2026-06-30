@@ -8,10 +8,10 @@
 
     <!-- NuGet package metadata -->
     <PackageId>JsonPathPlus</PackageId>
-    <Version>1.7.0</Version>
+    <Version>1.8.0</Version>
     <Authors>JsonPathPlus</Authors>
-    <Description>Lightweight JSONPath-like stream extension for System.Text.Json. Supports property access, array indexing, wildcards, ranges, and recursive descent without loading the full document into memory.</Description>
-    <PackageTags>json jsonpath stream System.Text.Json dotnet</PackageTags>
+    <Description>Lightweight JSONPath-like stream extension for System.Text.Json. Supports property access, array indexing, wildcards, ranges, recursive descent, JSON Schema generation (2020-12, draft-07), and format detection without loading the full document into memory.</Description>
+    <PackageTags>json jsonpath stream System.Text.Json dotnet json-schema schema-generation</PackageTags>
     <GeneratePackageOnBuild>false</GeneratePackageOnBuild>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <RepositoryUrl>https://github.com/Dimq1/JsonPathPlus</RepositoryUrl>

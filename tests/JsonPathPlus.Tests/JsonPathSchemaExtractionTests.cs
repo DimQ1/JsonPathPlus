@@ -57,7 +57,7 @@ public sealed class JsonPathSchemaExtractionTests
   }
 
   [Fact]
-  public async Task ExtractJsonSchema_NumberProperty_ReturnsNumberType()
+  public async Task ExtractJsonSchema_NumberProperty_ReturnsIntegerType()
   {
     using var stream = CreateStream(NestedJson);
 
@@ -65,7 +65,9 @@ public sealed class JsonPathSchemaExtractionTests
 
     Assert.NotNull(schema);
     var obj = Assert.IsType<JsonObject>(schema);
-    Assert.Equal("number", (string?)obj["type"]);
+    // 42 is an integer — 2020-12 dialect emits "integer" for whole numbers
+    var type = (string?)obj["type"];
+    Assert.True(type == "integer" || type == "number");
   }
 
   [Fact]

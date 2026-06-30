@@ -150,6 +150,10 @@ Task<JsonNode?> ExtractJsonSchemaAsync(this Stream stream, string? selectToken, 
 Task<JsonNode?> ExtractJsonSchemaAsync(this Stream stream, string? selectToken, JsonPathExtractionOptions options, CancellationToken cancellationToken = default)
 JsonNode? ExtractJsonSchema(this JsonNode? node, string? selectToken)
 Task<JsonNode?> ExtractJsonSchemaAsync(this string json, string? selectToken, CancellationToken cancellationToken = default)
+
+// JSON Schema generation options (control dialect, inference, formats)
+// JsonPathSchemaGenerationOptions.FullInference (default, 2020-12)
+// JsonPathSchemaGenerationOptions.Draft07Compatible
 ```
 
 Passing `null` or `"$"` as `selectToken` returns the entire document.
@@ -255,19 +259,20 @@ Each key in the bracket expression can have its own sub-path (filters, projectio
 
 ### JSON Schema extraction
 
-Generate a JSON Schema (draft-07 compatible) from JSON data by path. The schema infers types, properties, and structure from the matched data.
+Generate a **JSON Schema** ([2020-12](https://json-schema.org/specification) / [draft-07](https://json-schema.org/draft-07/json-schema-validation)) from JSON data by path. The schema infers types, properties, constraints, formats, enums, and structure from the matched data. The generator follows the [JSON Schema Core](https://json-schema.org/draft/2020-12/json-schema-core) and [JSON Schema Validation](https://json-schema.org/draft/2020-12/json-schema-validation) specifications.
 
 ```csharp
-// Get schema of the entire document
+// Get schema of the entire document (2020-12 by default)
 JsonNode? schema = await stream.ExtractJsonSchemaAsync("$");
 
 // Get schema of array items (schemas from all items are merged)
 JsonNode? itemSchema = await stream.ExtractJsonSchemaAsync("$.items[*]");
-// → { "type": "object", "properties": { "id": { "type": "number" }, "value": { "type": "string" } }, "required": ["id", "value"] }
-
-// Get schema of a specific property
-JsonNode? nameSchema = await stream.ExtractJsonSchemaAsync("$.name");
-// → { "type": "string" }
+// → { "$schema": "https://json-schema.org/draft/2020-12/schema",
+//     "type": "object",
+//     "properties": { "id": { "type": "integer", "minimum": 1, "maximum": 3 },
+//                    "value": { "type": "string", "minLength": 1, "maxLength": 1 } },
+//     "required": ["id", "value"],
+//     "minProperties": 2, "maxProperties": 2 }
 ```
 
 **Using the `schema()` path function** — generates a schema inline in the extraction pipeline:
@@ -281,20 +286,79 @@ await foreach (var s in stream.ExtractAllJsonMatchesAsync("$.items[*].schema()")
     Console.WriteLine(s);
 ```
 
+#### Inferred Schema Keywords
+
+The generator automatically infers the following keywords from data samples:
+
+| Category | Keywords | Example Output |
+|---|---|---|
+| **Core** | `$schema`, `$id`, `$comment` | `"$schema": "https://json-schema.org/draft/2020-12/schema"` |
+| **Type** | `type` (string or array), `integer` | `"type": "integer"`, `"type": ["string", "null"]` |
+| **Value constraints** | `const`, `enum` | `"const": "active"`, `"enum": ["red", "green", "blue"]` |
+| **Numeric** | `minimum`, `maximum` | `"minimum": 0, "maximum": 100` |
+| **String** | `minLength`, `maxLength`, `pattern` | `"minLength": 1, "maxLength": 255` |
+| **Array** | `minItems`, `maxItems`, `uniqueItems`, `items` | `"minItems": 3, "uniqueItems": true` |
+| **Object** | `minProperties`, `maxProperties`, `properties`, `required` | `"minProperties": 5, "required": ["id", "name"]` |
+| **Format** | `format` — auto-detected | `"format": "uuid"`, `"format": "date-time"`, `"format": "email"`, `"format": "ipv4"` |
+| **Applicator** | `oneOf`, `anyOf`, `additionalProperties`, `unevaluatedProperties`, `unevaluatedItems`, `prefixItems` | `"oneOf": [...]`, `"additionalProperties": false` |
+| **Dependencies** | `dependentRequired` | `"dependentRequired": { "credit_card": ["billing_address"] }` |
+
+#### Supported Auto-Detected Formats
+
+When `InferFormat` is enabled (default), the generator detects semantic formats in string values:
+
+| Format | Examples | RFC / Spec |
+|---|---|---|
+| `date-time` | `"2026-06-30T14:30:00Z"` | [RFC 3339 §5.6](https://tools.ietf.org/html/rfc3339#section-5.6) |
+| `date` | `"2026-06-30"` | [RFC 3339 §5.6](https://tools.ietf.org/html/rfc3339#section-5.6) |
+| `time` | `"14:30:00Z"` | [RFC 3339 §5.6](https://tools.ietf.org/html/rfc3339#section-5.6) |
+| `uuid` | `"f81d4fae-7dec-11d0-a765-00a0c91e6bf6"` | [RFC 4122](https://tools.ietf.org/html/rfc4122) |
+| `email` | `"user@example.com"` | [RFC 5321 §4.1.2](https://tools.ietf.org/html/rfc5321#section-4.1.2) |
+| `ipv4` | `"192.168.0.1"` | [RFC 2673 §3.2](https://tools.ietf.org/html/rfc2673#section-3.2) |
+| `ipv6` | `"2001:db8::1"` | [RFC 4291 §2.2](https://tools.ietf.org/html/rfc4291#section-2.2) |
+| `uri` | `"https://example.com"` | [RFC 3986](https://tools.ietf.org/html/rfc3986) |
+| `hostname` | `"api.example.com"` | [RFC 1123 §2.1](https://tools.ietf.org/html/rfc1123#section-2.1) |
+| `json-pointer` | `"/store/book/0/title"` | [RFC 6901 §5](https://tools.ietf.org/html/rfc6901#section-5) |
+| `uri-reference` | `"/relative/path"`, `"../other"` | [RFC 3986](https://tools.ietf.org/html/rfc3986) |
+
+#### Configuration Options
+
+Control schema generation behavior via `JsonPathSchemaGenerationOptions`:
+
+```csharp
+var opts = new JsonPathSchemaGenerationOptions
+{
+    SchemaDialect = JsonSchemaDialect.Draft202012,  // or Draft07
+    InferConstraints = true,    // min/max, lengths
+    InferEnum = true,           // enum from distinct values
+    InferConst = true,          // const from identical values
+    InferFormat = true,         // auto-detect format
+    InferPattern = true,        // auto-detect pattern (^\d+$, ^[a-zA-Z]+$, etc.)
+    InferUniqueItems = true,    // uniqueItems for arrays
+    MaxEnumValues = 10,         // max distinct values in enum
+    StrictAdditionalProperties = false,   // additionalProperties: false
+    StrictUnevaluatedProperties = false,  // unevaluatedProperties: false
+    StrictUnevaluatedItems = false,       // unevaluatedItems: false
+    InferDependentRequired = true,        // dependentRequired inference
+    GenerateMetaData = false,   // title, description, examples
+    HighConfidenceFormatOnly = true,  // only high-confidence format detection
+    SchemaId = null,            // optional $id
+    Comment = null,             // optional $comment
+};
+```
+
+**Pre-built presets:**
+- `JsonPathSchemaGenerationOptions.FullInference` — all inference enabled, 2020-12 dialect (default)
+- `JsonPathSchemaGenerationOptions.Draft07Compatible` — minimal output, draft-07, no auto-inference
+
 **Schema merging behavior:**
 - Same-type values merge into a unified schema (e.g., multiple objects merge their properties)
-- Mixed types produce a `oneOf` union
-- Required fields are those present in all merged object schemas
-- Empty arrays/objects produce `{ "type": "array" }` / `{ "type": "object" }` without nested details
-
-| Input type | Output schema |
-|---|---|
-| String | `{ "type": "string" }` |
-| Number | `{ "type": "number" }` |
-| Boolean | `{ "type": "boolean" }` |
-| Null | `{ "type": "null" }` |
-| Object | `{ "type": "object", "properties": {...}, "required": [...] }` |
-| Array | `{ "type": "array", "items": <merged schema> }` |
+- Mixed types produce a `oneOf` (2020-12) or `anyOf` (draft-07) union
+- Required fields are those present in **all** merged object schemas
+- Numeric ranges widen: `min` takes the smallest, `max` takes the largest
+- String lengths widen: `minLength` takes the smallest, `maxLength` takes the largest
+- `dependentRequired` is inferred from 100% co-occurrence of properties across schemas
+- Enum is emitted when 2–N distinct `const` values are seen across merged schemas
 
 ## Malformed path behavior
 

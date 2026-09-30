@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Globalization;
 
 namespace JsonPathPlus;
@@ -10,104 +9,71 @@ internal static class JsonPathComputedExpressionEvaluator
   {
     index = 0;
 
-    var tokens = TokenizeExpression(expression.AsSpan());
-    if (tokens.Count == 0)
+    var expr = expression.AsSpan().Trim();
+    if (expr.IsEmpty)
       return false;
 
-    if (!TryResolveOperandSpan(tokens[0], arrayLength, out var current))
+    if (!TryReadOperand(ref expr, arrayLength, out var current))
       return false;
 
-    for (var i = 1; i < tokens.Count; i += 2)
+    while (true)
     {
-      if (i + 1 >= tokens.Count)
+      expr = expr.Trim();
+      if (expr.IsEmpty)
+      {
+        index = (int)Math.Truncate(current);
+        return true;
+      }
+
+      var op = expr[0];
+      if (op is not ('+' or '-' or '*' or '/'))
         return false;
 
-      var op = tokens[i];
-      if (!TryResolveOperandSpan(tokens[i + 1], arrayLength, out var right))
+      expr = expr[1..];
+
+      if (!TryReadOperand(ref expr, arrayLength, out var right))
         return false;
 
       current = op switch
       {
-        "+" => current + right,
-        "-" => current - right,
-        "*" => current * right,
-        "/" when right != 0 => current / right,
+        '+' => current + right,
+        '-' => current - right,
+        '*' => current * right,
+        '/' when right != 0 => current / right,
         _ => double.NaN
       };
 
       if (double.IsNaN(current) || double.IsInfinity(current))
         return false;
     }
-
-    index = (int)Math.Truncate(current);
-    return true;
   }
 
-  /// <summary>
-  /// Tokenizes a simple arithmetic expression without allocating intermediate strings for the Replace+Split steps.
-  /// </summary>
-  private static List<string> TokenizeExpression(ReadOnlySpan<char> expression)
+  private static bool TryReadOperand(ref ReadOnlySpan<char> expr, int arrayLength, out double value)
   {
-    var tokens = new List<string>(3);
-    var start = 0;
+    expr = expr.TrimStart();
 
-    for (var i = 0; i < expression.Length; i++)
+    if (expr.StartsWith("@.length", StringComparison.Ordinal))
     {
-      if (IsOperator(expression[i]))
-      {
-        if (i > start)
-        {
-          var operand = expression[start..i].Trim();
-          if (!operand.IsEmpty)
-            tokens.Add(operand.ToString());
-        }
-
-        tokens.Add(expression.Slice(i, 1).ToString());
-        start = i + 1;
-      }
+      value = arrayLength;
+      expr = expr["@.length".Length..];
+      return true;
     }
 
-    if (start < expression.Length)
+    var i = 0;
+    while (i < expr.Length && !IsOperator(expr[i]))
+      i++;
+
+    var number = expr[..i].Trim();
+    if (number.IsEmpty)
     {
-      var operand = expression[start..].Trim();
-      if (!operand.IsEmpty)
-        tokens.Add(operand.ToString());
+      value = 0;
+      return false;
     }
 
-    return tokens;
+    expr = expr[i..];
+    return double.TryParse(number, NumberStyles.Float, CultureInfo.InvariantCulture, out value);
   }
 
   private static bool IsOperator(char c)
     => c is '+' or '-' or '*' or '/';
-
-  private static bool TryResolveOperandSpan(ReadOnlySpan<char> token, int arrayLength, out double value)
-  {
-    if (MemoryExtensions.Equals(token, "@.length", StringComparison.Ordinal))
-    {
-      value = arrayLength;
-      return true;
-    }
-
-    if (double.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
-      return true;
-
-    value = 0;
-    return false;
-  }
-
-  // Kept for backward compatibility with any external callers.
-  private static bool TryResolveOperand(string token, int arrayLength, out double value)
-  {
-    if (token.Equals("@.length", StringComparison.Ordinal))
-    {
-      value = arrayLength;
-      return true;
-    }
-
-    if (double.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out value))
-      return true;
-
-    value = 0;
-    return false;
-  }
 }

@@ -7,240 +7,69 @@ namespace JsonPathPlus;
 
 internal static class JsonPathFilterEvaluator
 {
-  private static readonly string[] ComparisonOperators = ["==", "!=", "<=", ">=", "<", ">"];
-
   public static bool Evaluate(JsonNode? candidate, string expression)
   {
     if (string.IsNullOrEmpty(expression))
       return false;
 
-    return EvaluateSpan(candidate, expression.AsSpan().Trim());
+    return JsonPathFilterNode.Compile(expression).Evaluate(candidate);
   }
 
-  private static bool EvaluateSpan(JsonNode? candidate, ReadOnlySpan<char> expr)
+  internal static bool CompareValues(object? left, object? right, JsonPathFilterOp op)
   {
-    if (expr.IsEmpty)
-      return false;
+    if (TryToDecimal(left, out var leftNumber) && TryToDecimal(right, out var rightNumber))
+      return CompareNumbers(leftNumber, rightNumber, op);
 
-    var orIndex = FindTopLevelOperator(expr, "||");
-    if (orIndex >= 0)
-      return EvaluateSpan(candidate, expr[..orIndex]) || EvaluateSpan(candidate, expr[(orIndex + 2)..]);
-
-    var andIndex = FindTopLevelOperator(expr, "&&");
-    if (andIndex >= 0)
-      return EvaluateSpan(candidate, expr[..andIndex]) && EvaluateSpan(candidate, expr[(andIndex + 2)..]);
-
-    if (expr[0] == '!')
-      return !EvaluateSpan(candidate, expr[1..]);
-
-    foreach (var op in ComparisonOperators)
-    {
-      var idx = FindTopLevelOperator(expr, op);
-      if (idx < 0)
-        continue;
-
-      var leftSpan = expr[..idx].Trim();
-      var rightSpan = expr[(idx + op.Length)..].Trim();
-
-      var leftValue = ResolveOperandSpan(candidate, leftSpan, out var leftExists);
-      var rightValue = ResolveOperandSpan(candidate, rightSpan, out var rightExists);
-      if (!leftExists || !rightExists)
-        return false;
-
-      return Compare(leftValue, rightValue, op);
-    }
-
-    _ = ResolveOperandSpan(candidate, expr, out var exists);
-    return exists;
-  }
-
-  private static int FindTopLevelOperator(ReadOnlySpan<char> expression, ReadOnlySpan<char> op)
-  {
-    var quote = '\0';
-    var depth = 0;
-
-    for (var i = 0; i <= expression.Length - op.Length; i++)
-    {
-      var ch = expression[i];
-      if (quote == '\0')
+    if (left is bool leftBool && right is bool rightBool)
+      return op switch
       {
-        if (ch is '"' or '\'')
-        {
-          quote = ch;
-          continue;
-        }
+        JsonPathFilterOp.Equal => leftBool == rightBool,
+        JsonPathFilterOp.NotEqual => leftBool != rightBool,
+        _ => false
+      };
 
-        if (ch == '(')
-        {
-          depth++;
-          continue;
-        }
-
-        if (ch == ')')
-        {
-          depth = Math.Max(0, depth - 1);
-          continue;
-        }
-
-        if (depth == 0 && expression.Slice(i, op.Length).SequenceEqual(op))
-          return i;
-      }
-      else if (ch == quote)
+    if (left is null || right is null)
+      return op switch
       {
-        quote = '\0';
-      }
-    }
+        JsonPathFilterOp.Equal => left is null && right is null,
+        JsonPathFilterOp.NotEqual => left is null || right is null,
+        _ => false
+      };
 
-    return -1;
+    if (left is string leftString && right is string rightString)
+      return CompareStrings(leftString, rightString, op);
+
+    return CompareStrings(left.ToString()!, right.ToString()!, op);
   }
 
-  private static object? ResolveOperandSpan(JsonNode? candidate, ReadOnlySpan<char> token, out bool exists)
+  private static bool CompareStrings(string left, string right, JsonPathFilterOp op)
   {
-    if (token.StartsWith("@."))
-      return ResolvePath(candidate, token[2..].ToString(), out exists);
-
-    if (token.SequenceEqual("@"))
+    var comparison = string.CompareOrdinal(left, right);
+    return op switch
     {
-      exists = candidate is not null;
-      return ToPrimitive(candidate);
-    }
-
-    if (token.Length >= 2 && token[0] == '"' && token[^1] == '"')
-    {
-      exists = true;
-      return token[1..^1].ToString();
-    }
-
-    if (token.Length >= 2 && token[0] == '\'' && token[^1] == '\'')
-    {
-      exists = true;
-      return token[1..^1].ToString();
-    }
-
-    if (MemoryExtensions.Equals(token, "true", StringComparison.OrdinalIgnoreCase))
-    {
-      exists = true;
-      return true;
-    }
-
-    if (MemoryExtensions.Equals(token, "false", StringComparison.OrdinalIgnoreCase))
-    {
-      exists = true;
-      return false;
-    }
-
-    if (MemoryExtensions.Equals(token, "null", StringComparison.OrdinalIgnoreCase))
-    {
-      exists = true;
-      return null;
-    }
-
-    // Fast guard: decimal.TryParse is expensive — skip it for tokens that cannot be numbers.
-    if (token.IsEmpty || !IsNumberStart(token[0]))
-    {
-      exists = false;
-      return null;
-    }
-
-    // decimal.TryParse requires a string — allocate only when needed.
-    if (decimal.TryParse(token.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out var number))
-    {
-      exists = true;
-      return number;
-    }
-
-    exists = false;
-    return null;
+      JsonPathFilterOp.Equal => comparison == 0,
+      JsonPathFilterOp.NotEqual => comparison != 0,
+      JsonPathFilterOp.LessThan => comparison < 0,
+      JsonPathFilterOp.LessThanOrEqual => comparison <= 0,
+      JsonPathFilterOp.GreaterThan => comparison > 0,
+      JsonPathFilterOp.GreaterThanOrEqual => comparison >= 0,
+      _ => false
+    };
   }
 
-  private static object? ResolveOperand(JsonNode? candidate, string token, out bool exists)
-  {
-    token = token.Trim();
-
-    if (token.StartsWith("@.", StringComparison.Ordinal))
-      return ResolvePath(candidate, token[2..], out exists);
-
-    if (token.Equals("@", StringComparison.Ordinal))
+  private static bool CompareNumbers(decimal left, decimal right, JsonPathFilterOp op)
+    => op switch
     {
-      exists = candidate is not null;
-      return ToPrimitive(candidate);
-    }
+      JsonPathFilterOp.Equal => left == right,
+      JsonPathFilterOp.NotEqual => left != right,
+      JsonPathFilterOp.LessThan => left < right,
+      JsonPathFilterOp.LessThanOrEqual => left <= right,
+      JsonPathFilterOp.GreaterThan => left > right,
+      JsonPathFilterOp.GreaterThanOrEqual => left >= right,
+      _ => false
+    };
 
-    if (token.StartsWith('"') && token.EndsWith('"') && token.Length >= 2)
-    {
-      exists = true;
-      return token[1..^1];
-    }
-
-    if (token.StartsWith('\'') && token.EndsWith('\'') && token.Length >= 2)
-    {
-      exists = true;
-      return token[1..^1];
-    }
-
-    if (token.Equals("true", StringComparison.OrdinalIgnoreCase))
-    {
-      exists = true;
-      return true;
-    }
-
-    if (token.Equals("false", StringComparison.OrdinalIgnoreCase))
-    {
-      exists = true;
-      return false;
-    }
-
-    if (token.Equals("null", StringComparison.OrdinalIgnoreCase))
-    {
-      exists = true;
-      return null;
-    }
-
-    // Fast guard: decimal.TryParse is expensive — skip it for tokens that cannot be numbers.
-    if (token.Length > 0 && !IsNumberStart(token[0]))
-    {
-      exists = false;
-      return null;
-    }
-
-    if (decimal.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out var number))
-    {
-      exists = true;
-      return number;
-    }
-
-    exists = false;
-    return null;
-  }
-
-  private static object? ResolvePath(JsonNode? candidate, string path, out bool exists)
-  {
-    JsonNode? current = candidate;
-    exists = current is not null;
-
-    var parts = path.Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-    foreach (var part in parts)
-    {
-      if (current is JsonObject obj)
-      {
-        if (!obj.TryGetPropertyValue(part, out current))
-        {
-          exists = false;
-          return null;
-        }
-
-        continue;
-      }
-
-      exists = false;
-      return null;
-    }
-
-    exists = current is not null;
-    return ToPrimitive(current);
-  }
-
-  private static object? ToPrimitive(JsonNode? node)
+  internal static object? ToPrimitive(JsonNode? node)
   {
     if (node is JsonValue value)
     {
@@ -275,56 +104,7 @@ internal static class JsonPathFilterEvaluator
     return node;
   }
 
-  private static bool Compare(object? left, object? right, string op)
-  {
-    if (TryToDecimal(left, out var ln) && TryToDecimal(right, out var rn))
-      return CompareNumbers(ln, rn, op);
-
-    if (left is bool lb && right is bool rb)
-      return op switch
-      {
-        "==" => lb == rb,
-        "!=" => lb != rb,
-        _ => false
-      };
-
-    if (left is null || right is null)
-      return op switch
-      {
-        "==" => left is null && right is null,
-        "!=" => left is null || right is null,
-        _ => false
-      };
-
-    var leftString = left.ToString();
-    var rightString = right.ToString();
-    var cmp = string.Compare(leftString, rightString, StringComparison.Ordinal);
-
-    return op switch
-    {
-      "==" => cmp == 0,
-      "!=" => cmp != 0,
-      "<" => cmp < 0,
-      "<=" => cmp <= 0,
-      ">" => cmp > 0,
-      ">=" => cmp >= 0,
-      _ => false
-    };
-  }
-
-  private static bool CompareNumbers(decimal left, decimal right, string op)
-    => op switch
-    {
-      "==" => left == right,
-      "!=" => left != right,
-      "<" => left < right,
-      "<=" => left <= right,
-      ">" => left > right,
-      ">=" => left >= right,
-      _ => false
-    };
-
-  private static bool TryToDecimal(object? value, out decimal number)
+  internal static bool TryToDecimal(object? value, out decimal number)
   {
     switch (value)
     {
@@ -369,7 +149,4 @@ internal static class JsonPathFilterEvaluator
         return false;
     }
   }
-
-  private static bool IsNumberStart(char c)
-    => c == '-' || (c >= '0' && c <= '9');
 }

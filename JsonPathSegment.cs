@@ -13,7 +13,8 @@ internal readonly record struct JsonPathSegment(
   string? FilterExpression = null,
   string? ComputedIndexExpression = null,
   string[]? ProjectionFields = null,
-  NestedQueryBranch[]? NestedQueryBranches = null);
+  NestedQueryBranch[]? NestedQueryBranches = null,
+  JsonPathFilterNode? FilterNode = null);
 
 internal readonly record struct NestedQueryBranch(
   string PropertyName,

@@ -91,6 +91,10 @@ internal static class JsonPathMatcher
     return results;
   }
 
+  private static JsonPathFilterNode? GetFilterNode(JsonPathSegment segment)
+    => segment.FilterNode
+       ?? (string.IsNullOrEmpty(segment.FilterExpression) ? null : JsonPathFilterNode.Compile(segment.FilterExpression));
+
   private static void FindSegmentMatchesInto(
     List<JsonNode?> current,
     JsonPathSegment segment,
@@ -125,7 +129,7 @@ internal static class JsonPathMatcher
           break;
 
         case JsonPathSegmentType.Filter:
-          CollectFilterMatches(node, segment.FilterExpression, results);
+          CollectFilterMatches(node, segment, results);
           break;
 
         case JsonPathSegmentType.ComputedIndex:
@@ -266,14 +270,16 @@ internal static class JsonPathMatcher
         return true;
 
       case JsonPathSegmentType.Filter:
-        if (string.IsNullOrWhiteSpace(segment.FilterExpression))
+      {
+        var filterNode = GetFilterNode(segment);
+        if (filterNode is null)
           return true;
 
         if (node is JsonArray arrayByFilter)
         {
           foreach (var item in arrayByFilter)
           {
-            if (JsonPathFilterEvaluator.Evaluate(item, segment.FilterExpression) && !visit(item))
+            if (filterNode.Evaluate(item) && !visit(item))
               return false;
           }
 
@@ -284,12 +290,13 @@ internal static class JsonPathMatcher
         {
           foreach (var property in objectByFilter)
           {
-            if (JsonPathFilterEvaluator.Evaluate(property.Value, segment.FilterExpression) && !visit(property.Value))
+            if (filterNode.Evaluate(property.Value) && !visit(property.Value))
               return false;
           }
         }
 
         return true;
+      }
 
       case JsonPathSegmentType.ComputedIndex:
         if (node is not JsonArray arrayByComputed || string.IsNullOrWhiteSpace(segment.ComputedIndexExpression))
@@ -583,7 +590,7 @@ internal static class JsonPathMatcher
           break;
 
         case JsonPathSegmentType.Filter:
-          CollectFilterMatchesWithPaths(context, segment.FilterExpression, results);
+          CollectFilterMatchesWithPaths(context, segment, results);
           break;
 
         case JsonPathSegmentType.ComputedIndex:
@@ -694,16 +701,17 @@ internal static class JsonPathMatcher
     }
   }
 
-  private static void CollectFilterMatches(JsonNode? node, string? filterExpression, List<JsonNode?> results)
+  private static void CollectFilterMatches(JsonNode? node, JsonPathSegment segment, List<JsonNode?> results)
   {
-    if (string.IsNullOrWhiteSpace(filterExpression))
+    var filterNode = GetFilterNode(segment);
+    if (filterNode is null)
       return;
 
     if (node is JsonArray array)
     {
       foreach (var item in array)
       {
-        if (JsonPathFilterEvaluator.Evaluate(item, filterExpression))
+        if (filterNode.Evaluate(item))
           results.Add(item);
       }
 
@@ -714,7 +722,7 @@ internal static class JsonPathMatcher
     {
       foreach (var property in obj)
       {
-        if (JsonPathFilterEvaluator.Evaluate(property.Value, filterExpression))
+        if (filterNode.Evaluate(property.Value))
           results.Add(property.Value);
       }
     }
@@ -1058,9 +1066,10 @@ internal static class JsonPathMatcher
     }
   }
 
-  private static void CollectFilterMatchesWithPaths(MatchContext context, string? filterExpression, List<MatchContext> results)
+  private static void CollectFilterMatchesWithPaths(MatchContext context, JsonPathSegment segment, List<MatchContext> results)
   {
-    if (string.IsNullOrWhiteSpace(filterExpression))
+    var filterNode = GetFilterNode(segment);
+    if (filterNode is null)
       return;
 
     if (context.Node is JsonArray array)
@@ -1068,7 +1077,7 @@ internal static class JsonPathMatcher
       for (var i = 0; i < array.Count; i++)
       {
         var item = array[i];
-        if (JsonPathFilterEvaluator.Evaluate(item, filterExpression))
+        if (filterNode.Evaluate(item))
           results.Add(new MatchContext(item, AppendArrayPath(context.Path, i)));
       }
 
@@ -1079,7 +1088,7 @@ internal static class JsonPathMatcher
     {
       foreach (var property in obj)
       {
-        if (JsonPathFilterEvaluator.Evaluate(property.Value, filterExpression))
+        if (filterNode.Evaluate(property.Value))
           results.Add(new MatchContext(property.Value, AppendPropertyPath(context.Path, property.Key)));
       }
     }

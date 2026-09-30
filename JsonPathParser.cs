@@ -113,7 +113,7 @@ internal static class JsonPathParser
     else if (inner.Length == 1 && inner[0] == '*')
       segments.Add(new JsonPathSegment(null, -1, -1, JsonPathSegmentType.Wildcard));
     else if (TryParseFilter(inner, out var filterExpression))
-      segments.Add(new JsonPathSegment(null, -1, -1, JsonPathSegmentType.Filter, null, null, filterExpression));
+      segments.Add(new JsonPathSegment(null, -1, -1, JsonPathSegmentType.Filter, null, null, filterExpression, null, null, null, JsonPathFilterNode.Compile(filterExpression!)));
     else if (TryParseComputedIndex(inner, out var computedExpression))
       segments.Add(new JsonPathSegment(null, -1, -1, JsonPathSegmentType.ComputedIndex, null, null, null, computedExpression));
     else if (IsArrayRangeCandidate(inner) && TryParseArrayRange(inner, out var rangeStart, out var rangeEnd))

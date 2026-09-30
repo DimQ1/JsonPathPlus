@@ -567,7 +567,7 @@ internal static class JsonPathStreamingMatcher
       JsonPathSegmentType.ArrayRange => index >= first.ArrayIndex
         && (first.ArrayRangeEnd == int.MaxValue || index < first.ArrayRangeEnd),
       JsonPathSegmentType.ArrayUnion => first.ArrayUnionIndices is not null && Array.IndexOf(first.ArrayUnionIndices, index) >= 0,
-      JsonPathSegmentType.Filter => JsonPathFilterEvaluator.Evaluate(item, first.FilterExpression!),
+      JsonPathSegmentType.Filter => (first.FilterNode ?? JsonPathFilterNode.Compile(first.FilterExpression!)).Evaluate(item),
       _ => false
     };
   }

@@ -92,7 +92,7 @@ internal static class JsonPathSchemaGenerator
       return CreateSchema("null", ctx.Options);
 
     if (nonNull.Count == 1)
-      return nonNull[0].DeepClone();
+      return nonNull[0].Parent is null ? nonNull[0] : nonNull[0].DeepClone();
 
     // Group by type (supporting both string and array type)
     var groups = new Dictionary<string, List<JsonNode>>(StringComparer.OrdinalIgnoreCase);
@@ -145,7 +145,7 @@ internal static class JsonPathSchemaGenerator
     {
       if (s is JsonObject obj && obj.TryGetPropertyValue("type", out var tn) && tn is not null)
         continue;
-      mergedPerType.Add(s.DeepClone());
+      mergedPerType.Add(s);
     }
 
     return MakeOneOfOrAnyOf(DistinctSchemas(mergedPerType), ctx);
@@ -153,15 +153,27 @@ internal static class JsonPathSchemaGenerator
 
   private static List<JsonNode> DistinctSchemas(List<JsonNode> schemas)
   {
-    var distinct = new List<JsonNode>();
-    var seen = new HashSet<string>();
-    foreach (var s in schemas)
+    var distinct = new List<JsonNode>(schemas.Count);
+    foreach (var schema in schemas)
     {
-      var json = s.ToJsonString();
-      if (seen.Add(json))
-        distinct.Add(s.DeepClone());
+      if (ContainsDeepEqual(distinct, schema))
+        continue;
+
+      distinct.Add(schema.Parent is null ? schema : schema.DeepClone());
     }
+
     return distinct;
+  }
+
+  private static bool ContainsDeepEqual(List<JsonNode> nodes, JsonNode candidate)
+  {
+    foreach (var node in nodes)
+    {
+      if (JsonNode.DeepEquals(node, candidate))
+        return true;
+    }
+
+    return false;
   }
 
   private static JsonNode MakeOneOfOrAnyOf(List<JsonNode> schemas, GenerationContext ctx)

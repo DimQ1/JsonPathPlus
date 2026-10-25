@@ -1,0 +1,47 @@
+JsonPathElementMatcher.cs
+  s_dbbe2a01c8d326::t_01119b578011aa 1-151
+JsonPathExtractionCore.cs
+  s_dbbe2a01c8d326::t_455a166dc02906 37,59
+JsonPathFilterEvaluator.cs
+  s_dbbe2a01c8d326::t_ad309e2a298021 8
+JsonPathFilterNode.cs
+  s_dbbe2a01c8d326::t_69a33bd6a1119b 3,20,35,79,82,85,88,91,97,158-159,175-176,188-189,201-202,226,228-232,241-242,247-248,258,266,271,274-289,296,298,301-306,311,313,316-322,333-339,341
+JsonPathFilterValue.cs
+  s_dbbe2a01c8d326::t_5c11b440bd2f6f 1-147
+JsonPathMatcher.cs
+  s_dbbe2a01c8d326::t_d19d0d55a8f237 10,17-19,22-23,25-26,28-30,32-34,36-39,42-43,45-46,49,51-52,54,56-57,60,62-64,66,68-69,71-72,76,78,80-81,83-85,87-90,92-102,104,106,108,111,113-114,116-119,121-131,133-142,144-154,156-159,161-180,182-190,192-196,198-202,206,208,211,213,216,220,222-223,225-228,231,233,237-241,244,246,248,250-257,260,262-263,268,273-274,276,278-279,282,284,286-287,290,293,295-300,302-303,305,307-309,312,315,317-318,320-321,323-329,331-335,337-339,341,344-348,350,355,357,360,362,364,366
+JsonPathStreamReader.cs
+  s_dbbe2a01c8d326::t_0df09f58331243 1-167
+JsonPathStreamingMatcher.cs
+  s_dbbe2a01c8d326::t_489de70f8d7da9 4,14,29-30,32-33,35,46-47,49-55,57,59-61,63-64,66,69-70,72-74,77-79,81-82,85-87,89-90,93-95,97,100-103,105,107,111,113-114,118-120,122-123,125-127,130-137,139-140,143-144,146-150,152-153,155-161,163,165,167,169-178,180,182-184,187-189,192-194,196-204,206-218,220,222,225,228-229,231-232,236,238-241,243-244,246-251,253,255-257,259,261-262,266,268-270,273,275-280,282,284-286,288,290,295,297-298,300,302,304-305
+PrefixReadStream.cs
+  s_dbbe2a01c8d326::t_8a7d7ba9e4fde0 1-54
+README.md
+  s_dbbe2a01c8d326::t_6a4d592fab5a93 12-49,202-203
+StreamJsonExtractionExtensions.cs
+  s_dbbe2a01c8d326::t_dc2ba4540d3a29 56-58,62-63,98-99,101,108-109,145-146,148,155-156,383
+tests/JsonPathPlus.Benchmarks/JsonPathStreamingMemoryBenchmarks.cs
+  s_dbbe2a01c8d326::t_ba20cd641ebfa5 1-98
+tests/JsonPathPlus.Tests/InternalInfrastructureTests.cs
+  s_dbbe2a01c8d326::t_ca81e63955fc45 184,186-187,191,194,197,200-203
+tests/JsonPathPlus.Tests/JsonPathMemoryStreamingTests.cs
+  s_dbbe2a01c8d326::t_519ea1e56804b3 1-328
+tests/JsonPathPlus.Tests/JsonPathStreamingMatcherInternalTests.cs
+  s_dbbe2a01c8d326::t_b54d16abe0e201 255,258-261,264-268,274-275
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "f8035c8f22ced1cf8cacc52320f8dd1fa5f3e8b4",
+  "prompts": {},
+  "sessions": {
+    "s_dbbe2a01c8d326": {
+      "agent_id": {
+        "tool": "github-copilot-cli",
+        "id": "b19c53e8-0b3b-4990-ac31-b9fa330c4cfb",
+        "model": "unknown"
+      },
+      "human_author": "Dzmitry Shchamialiou <dzmitry.shchamialiou@ventionteams.com>"
+    }
+  }
+}

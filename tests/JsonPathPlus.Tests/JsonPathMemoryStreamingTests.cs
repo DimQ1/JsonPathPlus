@@ -7,6 +7,94 @@ namespace JsonPathPlus.Tests;
 
 public sealed class JsonPathMemoryStreamingTests
 {
+  [Fact]
+  public async Task ExplicitMaxDepth_IsHonoredByStreamAndFallback()
+  {
+    var json = string.Concat(Enumerable.Repeat("{\"child\":", 80)) + "{\"id\":7}" + new string('}', 80);
+    var path = "$" + string.Concat(Enumerable.Repeat(".child", 80)) + ".id";
+    foreach (var query in new[] { path, "$" })
+    {
+      using var input = new MemoryStream(Encoding.UTF8.GetBytes(json));
+      var result = await input.ExtractFirstJsonMatchAsync(query, new JsonPathExtractionOptions { MaxDepth = 128 });
+      Assert.NotNull(result);
+    }
+    using var defaultInput = new MemoryStream(Encoding.UTF8.GetBytes(json));
+    await Assert.ThrowsAnyAsync<JsonException>(() => defaultInput.ExtractFirstJsonMatchAsync(path));
+  }
+
+  [Theory]
+  [InlineData("$.items[*].id", true)]
+  [InlineData("$", true)]
+  [InlineData("$.items[?(@.id == 1)].id", false)]
+  [InlineData("$", false)]
+  public async Task ExplicitByteLimits_RejectOversizedTokensAndCapturedValues(string path, bool tokenLimit)
+  {
+    var json = "{\"items\":[{\"id\":1,\"payload\":\"" + new string('x', 100000) + "\"}]}";
+    using var input = new CountingStream(Encoding.UTF8.GetBytes(json), false, 127);
+    var options = tokenLimit
+      ? new JsonPathExtractionOptions { MaxTokenBytes = 1024 }
+      : new JsonPathExtractionOptions { MaxCapturedValueBytes = 1024 };
+    await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+    {
+      await foreach (var _ in input.ExtractAllJsonMatchesAsync(path, options)) { }
+    });
+    Assert.True(input.CanRead);
+  }
+
+  [Theory]
+  [InlineData("$.groups[?(@.id == 0)].items[?(@.id > 1997)].id")]
+  [InlineData("$.groups[?(@.present && @.id == 0)].items[-1].id")]
+  [InlineData("$.groups[?(!@.missing && @.id == 0)].items[(@.length-1)].id")]
+  [InlineData("$.groups[*].items[-3:-1].id")]
+  [InlineData("$.groups[*].items[1999,0,1999,-2].id")]
+  [InlineData("$.groups[*].items..id")]
+  [InlineData("$.groups[*].items[id].id")]
+  [InlineData("$.groups[*].items[!name].id")]
+  [InlineData("$.groups[*][items[-1].id, id]")]
+  [InlineData("$..id")]
+  [InlineData("$..[0].id")]
+  [InlineData("$..[-1].id")]
+  public async Task LargeStreamPlans_PreserveDomResultsAndPaths(string path)
+  {
+    var items = string.Join(",", Enumerable.Range(0, 2000).Select(i => $"{{\"id\":{i},\"name\":\"item\"}}"));
+    var json = "{\"groups\":[{\"id\":0,\"present\":[],\"items\":[" + items + "]}]}";
+    var expected = new List<string>();
+    await foreach (var match in JsonNode.Parse(json).ExtractAllJsonMatchesWithPathsAsync(path))
+      expected.Add(match.Path + ":" + match.Value?.ToJsonString());
+
+    foreach (var seekable in new[] { false, true })
+    {
+      using var stream = new CountingStream(Encoding.UTF8.GetBytes(json), seekable, 127, asyncOnly: true);
+      var actual = new List<string>();
+      await foreach (var match in stream.ExtractAllJsonMatchesWithPathsAsync(path))
+        actual.Add(match.Path + ":" + match.Value?.ToJsonString());
+      Assert.Equal(expected, actual);
+      Assert.True(stream.CanRead);
+      if (seekable)
+        Assert.Equal(0, stream.Position);
+    }
+  }
+
+  [Fact]
+  public async Task CapturedLargeValue_SpillsToFileAndDeletesOnDisposal()
+  {
+    var json = "{\"payload\":\"" + new string('x', 100000) + "\"}";
+    using var input = new CountingStream(Encoding.UTF8.GetBytes(json), false, 4096, asyncOnly: true);
+    using var reader = new JsonPathStreamReader(input, default);
+    Assert.True(await reader.ReadAsync());
+    string fileName;
+    using (var value = await reader.CaptureValueAsync())
+    {
+      var file = Assert.IsType<FileStream>(value.Stream);
+      fileName = file.Name;
+      Assert.True(File.Exists(fileName));
+      using var document = await JsonDocument.ParseAsync(value.Stream);
+      Assert.Equal(100000, document.RootElement.GetProperty("payload").GetString()!.Length);
+    }
+    Assert.False(File.Exists(fileName));
+    Assert.True(input.CanRead);
+  }
+
   [Theory]
   [InlineData(false, false)]
   [InlineData(false, true)]
@@ -167,7 +255,7 @@ public sealed class JsonPathMemoryStreamingTests
     var node = new JsonObject { ["score"] = 42, ["active"] = true };
     using var document = JsonDocument.Parse("""{"score":42,"active":true}""");
     var filter = JsonPathFilterNode.Compile("@.score >= 2 && @.active == true");
-    for (var i = 0; i < 100; i++)
+    for (var i = 0; i < 10000; i++)
     {
       Assert.True(filter.Evaluate(node));
       Assert.True(filter.Evaluate(document.RootElement));

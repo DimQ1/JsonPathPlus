@@ -34,14 +34,14 @@ public sealed class JsonPathStreamingMatcherInternalTests
   """;
 
   [Fact]
-  public void CanUseStreaming_ReturnsNullForEmptySegmentsAndUnsupportedArraySelectors()
+  public void CanUseStreaming_RejectsEmptySegmentsAndSupportsReplaySelectors()
   {
     using var arrayStream = CreateSeekableStream(RootArrayJson);
 
     Assert.Null(JsonPathStreamingMatcher.CanUseStreaming(arrayStream, []));
-    Assert.Null(JsonPathStreamingMatcher.CanUseStreaming(arrayStream, Segments(ArrayIndex(-1))));
-    Assert.Null(JsonPathStreamingMatcher.CanUseStreaming(arrayStream, Segments(ArrayRange(-1, 2))));
-    Assert.Null(JsonPathStreamingMatcher.CanUseStreaming(arrayStream, Segments(ArrayUnion(0, -1))));
+    Assert.NotNull(JsonPathStreamingMatcher.CanUseStreaming(arrayStream, Segments(ArrayIndex(-1))));
+    Assert.NotNull(JsonPathStreamingMatcher.CanUseStreaming(arrayStream, Segments(ArrayRange(-1, 2))));
+    Assert.NotNull(JsonPathStreamingMatcher.CanUseStreaming(arrayStream, Segments(ArrayUnion(0, -1))));
   }
 
   [Fact]

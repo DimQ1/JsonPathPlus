@@ -822,7 +822,7 @@ public sealed class StreamJsonExtractionExtensionsTests
     var options = new JsonPathExtractionOptions { FullParseMaxBytes = 8 };
 
     var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-      async () => await CollectAsync(stream.ExtractAllJsonMatchesAsync("$..propertyName", options)));
+      async () => await CollectAsync(stream.ExtractAllJsonMatchesAsync("$", options)));
 
     Assert.Contains("FullParseMaxBytes", ex.Message);
   }

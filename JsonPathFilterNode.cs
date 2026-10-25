@@ -33,6 +33,7 @@ internal abstract class JsonPathFilterNode
 
   public abstract bool Evaluate(JsonNode? candidate);
   public abstract bool Evaluate(JsonElement candidate);
+  internal virtual bool CollectDependencies(JsonPathFilterDependencies dependencies) => true;
 
   public static JsonPathFilterNode Compile(string expression)
     => CompileSpan(expression.AsSpan().Trim());
@@ -157,6 +158,8 @@ internal abstract class JsonPathFilterNode
       => _left.Evaluate(candidate) || _right.Evaluate(candidate);
     public override bool Evaluate(JsonElement candidate)
       => _left.Evaluate(candidate) || _right.Evaluate(candidate);
+    internal override bool CollectDependencies(JsonPathFilterDependencies dependencies)
+      => _left.CollectDependencies(dependencies) & _right.CollectDependencies(dependencies);
   }
 
   private sealed class JsonPathAndNode : JsonPathFilterNode
@@ -174,6 +177,8 @@ internal abstract class JsonPathFilterNode
       => _left.Evaluate(candidate) && _right.Evaluate(candidate);
     public override bool Evaluate(JsonElement candidate)
       => _left.Evaluate(candidate) && _right.Evaluate(candidate);
+    internal override bool CollectDependencies(JsonPathFilterDependencies dependencies)
+      => _left.CollectDependencies(dependencies) & _right.CollectDependencies(dependencies);
   }
 
   private sealed class JsonPathNotNode : JsonPathFilterNode
@@ -187,6 +192,8 @@ internal abstract class JsonPathFilterNode
       => !_child.Evaluate(candidate);
     public override bool Evaluate(JsonElement candidate)
       => !_child.Evaluate(candidate);
+    internal override bool CollectDependencies(JsonPathFilterDependencies dependencies)
+      => _child.CollectDependencies(dependencies);
   }
 
   private sealed class JsonPathExistsNode : JsonPathFilterNode
@@ -200,6 +207,8 @@ internal abstract class JsonPathFilterNode
       => _operand.Exists(candidate);
     public override bool Evaluate(JsonElement candidate)
       => _operand.Exists(candidate);
+    internal override bool CollectDependencies(JsonPathFilterDependencies dependencies)
+      => _operand.CollectDependencies(dependencies, true);
   }
 
   private sealed class JsonPathCompareNode : JsonPathFilterNode
@@ -230,6 +239,8 @@ internal abstract class JsonPathFilterNode
       => _left.TryResolve(candidate, out var left)
          && _right.TryResolve(candidate, out var right)
          && left.Compare(right, _op);
+    internal override bool CollectDependencies(JsonPathFilterDependencies dependencies)
+      => _left.CollectDependencies(dependencies, false) & _right.CollectDependencies(dependencies, false);
   }
 
   private sealed class JsonPathFilterConstant : JsonPathFilterNode
@@ -248,6 +259,7 @@ internal abstract class JsonPathFilterNode
     public abstract bool TryResolve(JsonElement candidate, out JsonPathFilterValue value);
     public virtual bool Exists(JsonNode? candidate) => TryResolve(candidate, out _);
     public virtual bool Exists(JsonElement candidate) => TryResolve(candidate, out _);
+    public virtual bool CollectDependencies(JsonPathFilterDependencies dependencies, bool presenceOnly) => true;
   }
 
   private sealed class JsonPathOperand : JsonPathFilterOperand
@@ -256,6 +268,11 @@ internal abstract class JsonPathFilterNode
 
     public JsonPathOperand(ReadOnlySpan<char> path)
       => _parts = path.ToString().Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+    public override bool CollectDependencies(JsonPathFilterDependencies dependencies, bool presenceOnly)
+    {
+      dependencies.Add(_parts, presenceOnly);
+      return true;
+    }
 
     public override bool TryResolve(JsonNode? candidate, out JsonPathFilterValue value)
     {
@@ -316,6 +333,8 @@ internal abstract class JsonPathFilterNode
   private sealed class JsonPathCurrentOperand : JsonPathFilterOperand
   {
     public static readonly JsonPathCurrentOperand Instance = new();
+    public override bool CollectDependencies(JsonPathFilterDependencies dependencies, bool presenceOnly)
+      => presenceOnly;
 
     public override bool TryResolve(JsonNode? candidate, out JsonPathFilterValue value)
     {

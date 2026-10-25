@@ -13,15 +13,27 @@ Uses streaming selectors for root arrays and root objects, with automatic full-p
 
 Stream inputs are read incrementally, including arrays nested below property selectors
 such as `$.data.items[?(@.score >= 750)].name`. Filters evaluate a read-only
-`JsonElement` for each candidate; only returned values are materialized as `JsonNode`.
+`JsonElement` for small candidates; large candidates retain only filter dependencies
+while their encoded bytes are captured for replay. Only returned values are materialized as `JsonNode`.
 Results are yielded as they are found, without collecting the complete result set.
 Non-seekable streams replay only their small inspected prefix, not a copy of the input.
 
-For these selectors, working memory depends on the read buffer, the largest candidate
-element (or individual JSON token), and the selected value, rather than the entire array.
-Selectors requiring array length, reordered unions, recursive evaluation, or transformations
-may buffer the relevant subtree. Selecting the whole document or a whole array still
-requires materializing that result.
+For these selectors, working memory depends on fixed-size read blocks, the largest
+individual JSON token, filter operand values, and the selected result, rather than the
+entire array. Negative/computed indices, ordered nested unions, outer filters and nested
+queries use bounded replay. Seekable sources replay slices of the original input;
+non-seekable sources spill captures above 32 KiB to a private temporary file, deleted
+on disposal, cancellation or error. This trades extra passes and disk I/O for lower RAM.
+Recursive property searches and field projections traverse containers incrementally.
+Nested unions preserve requested order and duplicates; existing nonnegative root unions
+retain document order. Whole-value comparisons and selecting an entire document, object
+or array still require materializing that value.
+
+Stream overloads accept `JsonPathExtractionOptions` with `MaxDepth` (zero preserves the
+default depth 64), `MaxTokenBytes` and `MaxCapturedValueBytes`. Limits are opt-in and
+fail explicitly; `FullParseMaxBytes` continues to apply only to full-document fallback,
+not to streamable recursive or negative-index selectors. Temporary-storage and I/O
+errors propagate to the caller. Do not modify a seekable source while enumerating it.
 
 To keep memory low, pass a file/network stream directly, process results with
 `await foreach` rather than accumulating them, and use `ExtractFirstJsonMatchAsync`

@@ -49,18 +49,19 @@ public static class StreamJsonExtractionExtensions
     CancellationToken cancellationToken = default)
   {
     ArgumentNullException.ThrowIfNull(stream);
+    options.Validate();
     cancellationToken.ThrowIfCancellationRequested();
 
     var segments = JsonPathExtractionCore.ParseSegments(selectToken);
 
     var head = segments.Count > 0 ? await JsonPathStreamingMatcher.PeekStreamHeadAsync(stream, cancellationToken).ConfigureAwait(false) : default;
     if (segments.Count > 0 && JsonPathStreamingMatcher.CanStream(head.RootKind, segments[0]))
-      return await JsonPathStreamingMatcher.ExtractFirstMatchAsync(stream, segments, head, cancellationToken);
+      return await JsonPathStreamingMatcher.ExtractFirstMatchAsync(stream, segments, head, cancellationToken, options);
 
     EnsureFullParseAllowed(stream, options);
 
     using var prefixed = head.HeadBytes is { Length: > 0 } ? new PrefixReadStream(head.HeadBytes, stream) : null;
-    var root = await JsonNode.ParseAsync(prefixed ?? stream, nodeOptions: default, documentOptions: default, cancellationToken).ConfigureAwait(false);
+    var root = await ParseRootAsync(prefixed ?? stream, options, cancellationToken).ConfigureAwait(false);
     return JsonPathExtractionCore.FindFirstMatch(root, segments);
   }
 
@@ -91,6 +92,7 @@ public static class StreamJsonExtractionExtensions
     [EnumeratorCancellation] CancellationToken cancellationToken = default)
   {
     ArgumentNullException.ThrowIfNull(stream);
+    options.Validate();
     cancellationToken.ThrowIfCancellationRequested();
 
     var segments = JsonPathExtractionCore.ParseSegments(selectToken);
@@ -98,7 +100,7 @@ public static class StreamJsonExtractionExtensions
     var head = segments.Count > 0 ? await JsonPathStreamingMatcher.PeekStreamHeadAsync(stream, cancellationToken).ConfigureAwait(false) : default;
     if (segments.Count > 0 && JsonPathStreamingMatcher.CanStream(head.RootKind, segments[0]))
     {
-      await foreach (var match in JsonPathStreamingMatcher.ExtractAllMatchesAsync(stream, segments, head, cancellationToken))
+      await foreach (var match in JsonPathStreamingMatcher.ExtractAllMatchesAsync(stream, segments, head, cancellationToken, options))
         yield return match;
       yield break;
     }
@@ -106,7 +108,7 @@ public static class StreamJsonExtractionExtensions
     EnsureFullParseAllowed(stream, options);
 
     using var prefixed = head.HeadBytes is { Length: > 0 } ? new PrefixReadStream(head.HeadBytes, stream) : null;
-    var root = await JsonNode.ParseAsync(prefixed ?? stream, nodeOptions: default, documentOptions: default, cancellationToken).ConfigureAwait(false);
+    var root = await ParseRootAsync(prefixed ?? stream, options, cancellationToken).ConfigureAwait(false);
     foreach (var match in JsonPathExtractionCore.FindAllMatches(root, segments))
       yield return match;
   }
@@ -138,6 +140,7 @@ public static class StreamJsonExtractionExtensions
     [EnumeratorCancellation] CancellationToken cancellationToken = default)
   {
     ArgumentNullException.ThrowIfNull(stream);
+    options.Validate();
     cancellationToken.ThrowIfCancellationRequested();
 
     var segments = JsonPathExtractionCore.ParseSegments(selectToken);
@@ -145,7 +148,7 @@ public static class StreamJsonExtractionExtensions
     var head = segments.Count > 0 ? await JsonPathStreamingMatcher.PeekStreamHeadAsync(stream, cancellationToken).ConfigureAwait(false) : default;
     if (segments.Count > 0 && JsonPathStreamingMatcher.CanStream(head.RootKind, segments[0]))
     {
-      await foreach (var match in JsonPathStreamingMatcher.ExtractAllMatchesWithPathsAsync(stream, segments, head, cancellationToken))
+      await foreach (var match in JsonPathStreamingMatcher.ExtractAllMatchesWithPathsAsync(stream, segments, head, cancellationToken, options))
         yield return match;
       yield break;
     }
@@ -153,9 +156,24 @@ public static class StreamJsonExtractionExtensions
     EnsureFullParseAllowed(stream, options);
 
     using var prefixed = head.HeadBytes is { Length: > 0 } ? new PrefixReadStream(head.HeadBytes, stream) : null;
-    var root = await JsonNode.ParseAsync(prefixed ?? stream, nodeOptions: default, documentOptions: default, cancellationToken).ConfigureAwait(false);
+    var root = await ParseRootAsync(prefixed ?? stream, options, cancellationToken).ConfigureAwait(false);
     foreach (var match in JsonPathExtractionCore.FindAllMatchesWithPaths(root, segments))
       yield return match;
+  }
+
+  private static async Task<JsonNode?> ParseRootAsync(
+    Stream stream, JsonPathExtractionOptions options, CancellationToken cancellationToken)
+  {
+    if (!options.MaxTokenBytes.HasValue && !options.MaxCapturedValueBytes.HasValue)
+      return await JsonNode.ParseAsync(stream, documentOptions: new JsonDocumentOptions { MaxDepth = options.MaxDepth },
+        cancellationToken: cancellationToken).ConfigureAwait(false);
+    using var reader = new JsonPathStreamReader(stream, cancellationToken, options);
+    if (!await reader.ReadAsync().ConfigureAwait(false))
+      throw new JsonException("Missing JSON document.");
+    using var document = await reader.ReadValueAsync().ConfigureAwait(false);
+    if (await reader.ReadAsync().ConfigureAwait(false))
+      throw new JsonException("Unexpected content after the JSON document.");
+    return JsonPathElementMatcher.Materialize(document.RootElement);
   }
 
   private static void EnsureFullParseAllowed(Stream stream, JsonPathExtractionOptions options)

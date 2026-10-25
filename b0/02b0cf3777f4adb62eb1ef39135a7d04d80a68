@@ -1,0 +1,25 @@
+JsonPathElementMatcher.cs
+  s_dbbe2a01c8d326::t_1267f2751c8628 15-20,25-33
+JsonPathFilterValue.cs
+  s_dbbe2a01c8d326::t_af05d20765d2de 10,78,86-101,136,148,150
+tests/JsonPathPlus.Tests/JsonPathMemoryStreamingTests.cs
+  s_dbbe2a01c8d326::t_ac3599481c3366 191-220
+JsonPathFilterNode.cs
+  s_dbbe2a01c8d326::t_3a3e289ad8d840 200,202,249-250,292-313,331-334
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "b002b0cf3777f4adb62eb1ef39135a7d04d80a68",
+  "prompts": {},
+  "sessions": {
+    "s_dbbe2a01c8d326": {
+      "agent_id": {
+        "tool": "github-copilot-cli",
+        "id": "b19c53e8-0b3b-4990-ac31-b9fa330c4cfb",
+        "model": "unknown"
+      },
+      "human_author": "Dzmitry Shchamialiou <dzmitry.shchamialiou@ventionteams.com>"
+    }
+  }
+}

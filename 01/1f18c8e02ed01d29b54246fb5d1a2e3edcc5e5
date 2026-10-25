@@ -1,0 +1,27 @@
+JsonPathLocation.cs
+  s_dbbe2a01c8d326::t_989b8a950d54e6 14-15,17,25,40,44,46,48-57,70-76
+JsonPathStreamReader.cs
+  s_dbbe2a01c8d326::t_eaf82d8304faae 38,363-369,384-385,415-419
+JsonPathStreamingMatcher.cs
+  s_dbbe2a01c8d326::t_43a86d1179edd8 134,177-197,201-209,222-224,243,245-265,269-277,287-301
+tests/JsonPathPlus.Tests/JsonPathMemoryStreamingTests.cs
+  s_dbbe2a01c8d326::t_bde63f9e74cfea 20-36
+README.md
+  s_dbbe2a01c8d326::t_5b864f34d6e947 62-112
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "011f18c8e02ed01d29b54246fb5d1a2e3edcc5e5",
+  "prompts": {},
+  "sessions": {
+    "s_dbbe2a01c8d326": {
+      "agent_id": {
+        "tool": "github-copilot-cli",
+        "id": "b19c53e8-0b3b-4990-ac31-b9fa330c4cfb",
+        "model": "unknown"
+      },
+      "human_author": "Dzmitry Shchamialiou <dzmitry.shchamialiou@ventionteams.com>"
+    }
+  }
+}

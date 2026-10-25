@@ -197,9 +197,9 @@ internal abstract class JsonPathFilterNode
       => _operand = operand;
 
     public override bool Evaluate(JsonNode? candidate)
-      => _operand.TryResolve(candidate, out _);
+      => _operand.Exists(candidate);
     public override bool Evaluate(JsonElement candidate)
-      => _operand.TryResolve(candidate, out _);
+      => _operand.Exists(candidate);
   }
 
   private sealed class JsonPathCompareNode : JsonPathFilterNode
@@ -246,6 +246,8 @@ internal abstract class JsonPathFilterNode
   {
     public abstract bool TryResolve(JsonNode? candidate, out JsonPathFilterValue value);
     public abstract bool TryResolve(JsonElement candidate, out JsonPathFilterValue value);
+    public virtual bool Exists(JsonNode? candidate) => TryResolve(candidate, out _);
+    public virtual bool Exists(JsonElement candidate) => TryResolve(candidate, out _);
   }
 
   private sealed class JsonPathOperand : JsonPathFilterOperand
@@ -287,6 +289,28 @@ internal abstract class JsonPathFilterNode
       value = JsonPathFilterValue.FromElement(current);
       return current.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined);
     }
+
+    public override bool Exists(JsonNode? candidate)
+    {
+      var current = candidate;
+      foreach (var part in _parts)
+      {
+        if (current is not JsonObject obj || !obj.TryGetPropertyValue(part, out current))
+          return false;
+      }
+      return current is not null;
+    }
+
+    public override bool Exists(JsonElement candidate)
+    {
+      var current = candidate;
+      foreach (var part in _parts)
+      {
+        if (current.ValueKind != JsonValueKind.Object || !current.TryGetProperty(part, out current))
+          return false;
+      }
+      return current.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined);
+    }
   }
 
   private sealed class JsonPathCurrentOperand : JsonPathFilterOperand
@@ -304,6 +328,10 @@ internal abstract class JsonPathFilterNode
       value = JsonPathFilterValue.FromElement(candidate);
       return candidate.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined);
     }
+
+    public override bool Exists(JsonNode? candidate) => candidate is not null;
+    public override bool Exists(JsonElement candidate)
+      => candidate.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined);
   }
 
   private sealed class JsonPathLiteralOperand : JsonPathFilterOperand

@@ -189,6 +189,36 @@ public sealed class JsonPathMemoryStreamingTests
   }
 
   [Theory]
+  [InlineData("@.payload")]
+  [InlineData("@.payload == 'different'")]
+  [InlineData("@.payload != 'different'")]
+  public void StringPresenceAndLiteralComparison_DoNotDecodeLargeStrings(string expression)
+  {
+    using var document = JsonDocument.Parse("{\"payload\":\"" + new string('x', 100000) + "\"}");
+    var filter = JsonPathFilterNode.Compile(expression);
+    _ = filter.Evaluate(document.RootElement);
+    var before = GC.GetAllocatedBytesForCurrentThread();
+    for (var i = 0; i < 100; i++)
+      _ = filter.Evaluate(document.RootElement);
+    Assert.InRange(GC.GetAllocatedBytesForCurrentThread() - before, 0, 1024);
+  }
+
+  [Theory]
+  [InlineData("123")]
+  [InlineData("1e3")]
+  [InlineData("1234567890123456789012345678")]
+  [InlineData("\"hello\"")]
+  [InlineData("true")]
+  [InlineData("null")]
+  public void MaterializedScalars_PreserveJsonAndSurviveDocumentDisposal(string json)
+  {
+    JsonNode? result;
+    using (var document = JsonDocument.Parse(json))
+      result = JsonPathElementMatcher.Materialize(document.RootElement);
+    Assert.Equal(json, result?.ToJsonString() ?? "null");
+  }
+
+  [Theory]
   [InlineData(false)]
   [InlineData(true)]
   public async Task NodeMatching_DoesNotEvaluateLaterCandidatesBeforeYield(bool withPaths)

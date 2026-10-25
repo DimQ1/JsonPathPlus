@@ -12,11 +12,25 @@ internal static class JsonPathElementMatcher
   private readonly record struct ElementMatch(JsonElement Element, string Path);
 
   public static JsonNode? Materialize(JsonElement element)
-    => element.ValueKind == JsonValueKind.Null ? null : JsonSerializer.Deserialize<JsonNode>(element);
+    => element.ValueKind switch
+    {
+      JsonValueKind.Null => null,
+      JsonValueKind.Object or JsonValueKind.Array => JsonSerializer.Deserialize<JsonNode>(element),
+      _ => JsonValue.Create(element.Clone())
+    };
 
   public static IEnumerable<JsonPathValueMatch> FindMatches(
     JsonElement element, List<JsonPathSegment> segments, int startIndex, string? path)
   {
+    while (startIndex < segments.Count && segments[startIndex].SegmentType == JsonPathSegmentType.Property)
+    {
+      var name = segments[startIndex].PropertyName!;
+      if (element.ValueKind != JsonValueKind.Object || !element.TryGetProperty(name, out element))
+        yield break;
+      path = path is null ? null : PropertyPath(path, name);
+      startIndex++;
+    }
+
     if (startIndex >= segments.Count)
     {
       yield return new JsonPathValueMatch(path ?? "$", Materialize(element));

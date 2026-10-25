@@ -7,7 +7,7 @@ namespace JsonPathPlus;
 
 internal readonly struct JsonPathFilterValue
 {
-  private enum ValueKind { Null, Number, Double, Boolean, String, Node, Element }
+  private enum ValueKind { Null, Number, Double, Boolean, String, ElementString, Node, Element }
 
   private readonly ValueKind _kind;
   private readonly decimal _number;
@@ -75,7 +75,7 @@ internal readonly struct JsonPathFilterValue
       JsonValueKind.Null or JsonValueKind.Undefined => default,
       JsonValueKind.True => FromBoolean(true),
       JsonValueKind.False => FromBoolean(false),
-      JsonValueKind.String => FromString(element.GetString()!),
+      JsonValueKind.String => new JsonPathFilterValue(ValueKind.ElementString, element: element),
       JsonValueKind.Number when element.TryGetDecimal(out var number) => FromNumber(number),
       JsonValueKind.Number => new JsonPathFilterValue(ValueKind.Double, doubleNumber: element.GetDouble()),
       _ => new JsonPathFilterValue(ValueKind.Element, element: element)
@@ -83,6 +83,22 @@ internal readonly struct JsonPathFilterValue
 
   public bool Compare(JsonPathFilterValue right, JsonPathFilterOp op)
   {
+    if (op is JsonPathFilterOp.Equal or JsonPathFilterOp.NotEqual)
+    {
+      if (_kind == ValueKind.ElementString && right._kind == ValueKind.String
+          && !right.TryGetNumber(out _))
+      {
+        var equal = _element.ValueEquals(right._text);
+        return op == JsonPathFilterOp.Equal ? equal : !equal;
+      }
+      if (_kind == ValueKind.String && right._kind == ValueKind.ElementString
+          && !TryGetNumber(out _))
+      {
+        var equal = right._element.ValueEquals(_text);
+        return op == JsonPathFilterOp.Equal ? equal : !equal;
+      }
+    }
+
     if (TryGetNumber(out var leftNumber) && right.TryGetNumber(out var rightNumber))
       return CompareResult(leftNumber.CompareTo(rightNumber), op);
 
@@ -117,6 +133,7 @@ internal readonly struct JsonPathFilterValue
     {
       ValueKind.Number => true,
       ValueKind.String => decimal.TryParse(_text, NumberStyles.Float, CultureInfo.InvariantCulture, out number),
+      ValueKind.ElementString => decimal.TryParse(_element.GetString(), NumberStyles.Float, CultureInfo.InvariantCulture, out number),
       _ => false
     };
   }
@@ -128,8 +145,9 @@ internal readonly struct JsonPathFilterValue
       ValueKind.Double => _double.ToString(CultureInfo.CurrentCulture),
       ValueKind.Boolean => _boolean.ToString(),
       ValueKind.String => _text!,
+      ValueKind.ElementString => _element.GetString()!,
       ValueKind.Node => _node!.ToString(),
-      ValueKind.Element => JsonNode.Parse(_element.GetRawText())!.ToString(),
+      ValueKind.Element => JsonPathElementMatcher.Materialize(_element)!.ToString(),
       _ => string.Empty
     };
 

@@ -1,0 +1,37 @@
+JsonPathBufferedWriteStream.cs
+  s_dbbe2a01c8d326::t_9d2d8efc7dfdd8 1-61
+JsonPathEditingOptions.cs
+  s_dbbe2a01c8d326::t_ee6bcd34a7d652 1-14
+JsonPathParser.cs
+  s_dbbe2a01c8d326::t_7cee662d0115c5 10,19,21-23,25,30-31,38-39
+JsonPathStreamEditor.cs
+  s_dbbe2a01c8d326::t_6d0554fea62118 1-498
+JsonPathStreamReader.cs
+  s_dbbe2a01c8d326::t_d7b0476f1642f9 49,212-213,221-223,249,260-267,333-335
+JsonPathValueBuffer.cs
+  s_dbbe2a01c8d326::t_a2ca1567482b53 14-15,17-26,47,49,75-84
+README.md
+  s_dbbe2a01c8d326::t_382f17d3994f6c 93-183
+StreamJsonEditingExtensions.cs
+  s_dbbe2a01c8d326::t_97b030d7329896 1-81
+tests/JsonPathPlus.Benchmarks/JsonPathEditingMemoryBenchmarks.cs
+  s_dbbe2a01c8d326::t_3c72fb781d9191 1-77
+tests/JsonPathPlus.Tests/StreamJsonEditingExtensionsTests.cs
+  s_dbbe2a01c8d326::t_76efc2100b7875 1-385
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "44ca3b924894f73428b5bddd0fcf8ddc930e1400",
+  "prompts": {},
+  "sessions": {
+    "s_dbbe2a01c8d326": {
+      "agent_id": {
+        "tool": "github-copilot-cli",
+        "id": "b19c53e8-0b3b-4990-ac31-b9fa330c4cfb",
+        "model": "unknown"
+      },
+      "human_author": "Dzmitry Shchamialiou <dzmitry.shchamialiou@ventionteams.com>"
+    }
+  }
+}

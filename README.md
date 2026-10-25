@@ -59,6 +59,57 @@ Enumerating an entire array still allocates per-candidate read-only documents, b
 does not retain all candidates or matches. Regression tests also verify that the
 first result requires reading no more than 32 KB of a much larger input.
 
+### Observed peak-memory results
+
+Isolated .NET 8 Release probes compared the optimized reader with commit `f8035c8`.
+Each case ran in three fresh processes after a small-input warmup; the table shows
+medians. Inputs were non-seekable: either 100,000 small records (about 3.93 MB,
+including nested collections), or two records with an 8 MiB string in the rejected
+record. Searches below consume only the first selected result.
+
+For extraction, observed managed peak is the larger of the managed-heap high-water
+sampled every 1 ms and the retained managed bytes measured at the first yield,
+relative to the post-warmup baseline. Sampling can miss short peaks; this is not
+an exact profiler maximum, a process working-set measurement, or a universal RAM limit.
+Result counts, numeric checksums, final values and returned paths were checked
+against the baseline.
+
+| Search | Baseline peak, MiB | Optimized peak, MiB | Reduction |
+| --- | ---: | ---: | ---: |
+| Outer-object filter followed by nested-array filter | 40.01 | 0.27 | 99.3% |
+| Recursive property search in nested collections | 75.77 | 0.05 | 99.9% |
+| Last element of a nested array | 40.01 | 0.35 | 99.1% |
+| Field projection of a nested collection | 75.76 | 0.04 | 99.9% |
+| Reject an item containing an 8 MiB string | 64.02 | 8.25 | 87.1% |
+| Same string case with 4 KiB reads | 64.02 | 8.41 | 86.9% |
+
+The ten previously buffered, small-output search cases exceeded an 80% reduction.
+This does **not** apply to every workload: already-streaming full-array enumeration
+and deeply nested path enumeration reduced observed peak by only 2-5%. Whole-value
+results still require output-sized memory. Throughput also varies: full flat-filter
+enumeration improved from 524 to 377 ms, while returning 100,000 deeply nested paths
+slowed from 589 to 643 ms. These diagnostic timings include measurement overhead.
+
+Streaming editing was separately compared with `JsonNode.ParseAsync` followed by
+the equivalent DOM transformation and serialization of all 100,000 records. Both
+implementations produced matching output lengths and full-output checksums.
+Using the same three-process median and 1 ms managed-heap sampling:
+
+| Complete-document rewrite | DOM peak, MiB | Streaming peak, MiB | Reduction |
+| --- | ---: | ---: | ---: |
+| Project each item to its `id` | 83.04 | 14.54 | 82.5% |
+| Increment each item's `score` with a `JsonNode` callback | 92.44 | 14.41 | 84.4% |
+
+Lower peak does not imply fewer total allocations or faster execution. Callbacks
+still allocate a small DOM per selected value, and small inputs can be slower than
+whole-document editing. Temporary-file replay also trades RAM for I/O.
+Use BenchmarkDotNet to measure editing throughput and total managed allocations
+on the target machine; these are different metrics from the observed peaks above:
+
+```powershell
+dotnet run --project tests\JsonPathPlus.Benchmarks\JsonPathPlus.Benchmarks.csproj --framework net8.0 --configuration Release -- --filter "*JsonPathEditingMemoryBenchmarks*"
+```
+
 ## Installation
 
 ```

@@ -131,8 +131,7 @@ internal static partial class JsonPathStreamingMatcher
         cancellationToken.ThrowIfCancellationRequested();
         if (segmentIndex >= segments.Count)
         {
-            using var document = await reader.ReadValueAsync().ConfigureAwait(false);
-            yield return new JsonPathValueMatch(path?.ToString() ?? "$", JsonPathElementMatcher.Materialize(document.RootElement));
+            yield return await ReadMatchAsync(reader, path).ConfigureAwait(false);
             yield break;
         }
 
@@ -175,15 +174,39 @@ internal static partial class JsonPathStreamingMatcher
                 }
                 else if (filter is not null)
                 {
-                    await foreach (var match in FilterAsync(reader, filter, segments, segmentIndex + 1,
-                      path is null ? null : JsonPathElementMatcher.ArrayPath(path, index), cancellationToken))
-                        yield return match;
+                    if (reader.TryReadSmallDocument(out var document))
+                    {
+                        using (document)
+                        {
+                            if (filter.Evaluate(document!.RootElement))
+                            {
+                                foreach (var match in JsonPathElementMatcher.FindMatches(document.RootElement, segments,
+                                  segmentIndex + 1, JsonPathElementMatcher.ArrayPath(path, index)))
+                                {
+                                    cancellationToken.ThrowIfCancellationRequested();
+                                    yield return match;
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        await foreach (var match in FilterAsync(reader, filter, segments, segmentIndex + 1,
+                          JsonPathElementMatcher.ArrayPath(path, index), cancellationToken))
+                            yield return match;
+                    }
                 }
                 else
                 {
-                    await foreach (var match in TraverseAsync(reader, segments, segmentIndex + 1,
-                      path is null ? null : JsonPathElementMatcher.ArrayPath(path, index), cancellationToken))
-                        yield return match;
+                    var childPath = JsonPathElementMatcher.ArrayPath(path, index);
+                    if (segmentIndex + 1 >= segments.Count)
+                        yield return await ReadMatchAsync(reader, childPath).ConfigureAwait(false);
+                    else
+                    {
+                        await foreach (var match in TraverseAsync(reader, segments, segmentIndex + 1,
+                          childPath, cancellationToken))
+                            yield return match;
+                    }
                 }
 
                 index++;
@@ -196,6 +219,9 @@ internal static partial class JsonPathStreamingMatcher
               or JsonPathSegmentType.Wildcard or JsonPathSegmentType.Filter
             && (segmentIndex == 0 || segment.SegmentType != JsonPathSegmentType.PropertyUnion))
         {
+            var objectFilter = segment.SegmentType == JsonPathSegmentType.Filter
+              ? segment.FilterNode ?? JsonPathFilterNode.Compile(segment.FilterExpression ?? string.Empty)
+              : null;
             while (await reader.ReadAsync().ConfigureAwait(false))
             {
                 if (reader.TokenType == JsonTokenType.EndObject)
@@ -214,19 +240,41 @@ internal static partial class JsonPathStreamingMatcher
                 if (!await reader.ReadAsync().ConfigureAwait(false))
                     throw new JsonException("Missing JSON property value.");
 
-                if (selected && segment.SegmentType == JsonPathSegmentType.Filter)
+                if (selected && objectFilter is not null)
                 {
-                    await foreach (var match in FilterAsync(reader,
-                      segment.FilterNode ?? JsonPathFilterNode.Compile(segment.FilterExpression ?? string.Empty),
-                      segments, segmentIndex + 1,
-                      path is null ? null : JsonPathElementMatcher.PropertyPath(path, name), cancellationToken))
-                        yield return match;
+                    if (reader.TryReadSmallDocument(out var document))
+                    {
+                        using (document)
+                        {
+                            if (objectFilter.Evaluate(document!.RootElement))
+                            {
+                                foreach (var match in JsonPathElementMatcher.FindMatches(document.RootElement, segments,
+                                  segmentIndex + 1, JsonPathElementMatcher.PropertyPath(path, name)))
+                                {
+                                    cancellationToken.ThrowIfCancellationRequested();
+                                    yield return match;
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        await foreach (var match in FilterAsync(reader, objectFilter, segments, segmentIndex + 1,
+                          JsonPathElementMatcher.PropertyPath(path, name), cancellationToken))
+                            yield return match;
+                    }
                 }
                 else if (selected)
                 {
-                    await foreach (var match in TraverseAsync(reader, segments, segmentIndex + 1,
-                      path is null ? null : JsonPathElementMatcher.PropertyPath(path, name), cancellationToken))
-                        yield return match;
+                    var childPath = JsonPathElementMatcher.PropertyPath(path, name);
+                    if (segmentIndex + 1 >= segments.Count)
+                        yield return await ReadMatchAsync(reader, childPath).ConfigureAwait(false);
+                    else
+                    {
+                        await foreach (var match in TraverseAsync(reader, segments, segmentIndex + 1,
+                          childPath, cancellationToken))
+                            yield return match;
+                    }
                 }
                 else
                 {
@@ -236,6 +284,21 @@ internal static partial class JsonPathStreamingMatcher
             throw new JsonException("Incomplete JSON object.");
         }
 
+        await foreach (var match in TraverseComplexAsync(reader, segments, segmentIndex, path, cancellationToken))
+            yield return match;
+    }
+
+    private static async ValueTask<JsonPathValueMatch> ReadMatchAsync(JsonPathStreamReader reader, JsonPathLocation? path)
+    {
+        using var document = await reader.ReadValueAsync().ConfigureAwait(false);
+        return new JsonPathValueMatch(path?.ToString() ?? "$", JsonPathElementMatcher.Materialize(document.RootElement));
+    }
+
+    private static async IAsyncEnumerable<JsonPathValueMatch> TraverseComplexAsync(
+        JsonPathStreamReader reader, List<JsonPathSegment> segments, int segmentIndex, JsonPathLocation? path,
+        [EnumeratorCancellation] CancellationToken cancellationToken)
+    {
+        var segment = segments[segmentIndex];
         if (reader.TokenType == JsonTokenType.StartArray
             && segment.SegmentType is JsonPathSegmentType.ArrayIndex or JsonPathSegmentType.ArrayRange
               or JsonPathSegmentType.ArrayUnion or JsonPathSegmentType.ComputedIndex)
@@ -348,21 +411,6 @@ internal static partial class JsonPathStreamingMatcher
         JsonPathStreamReader reader, JsonPathFilterNode filter, List<JsonPathSegment> segments, int nextIndex, JsonPathLocation? path,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
-        if (reader.TryReadSmallDocument(out var document))
-        {
-            using (document)
-            {
-                if (filter.Evaluate(document!.RootElement))
-                {
-                    foreach (var match in JsonPathElementMatcher.FindMatches(document.RootElement, segments, nextIndex, path))
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-                        yield return match;
-                    }
-                }
-            }
-            yield break;
-        }
         var dependencies = new JsonPathFilterDependencies();
         var canProject = filter.CollectDependencies(dependencies);
         using var value = await reader.CaptureValueAsync(canProject ? dependencies : null).ConfigureAwait(false);

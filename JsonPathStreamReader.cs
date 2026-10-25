@@ -35,6 +35,7 @@ internal sealed class JsonPathStreamReader : IDisposable
   private readonly long _origin;
   private Block _head = new();
   private Block _tail;
+  private Block? _spare;
   private int _headOffset;
   private long _pendingConsumed;
   private long _absoluteConsumed;
@@ -359,7 +360,13 @@ internal sealed class JsonPathStreamReader : IDisposable
       var previous = _head;
       _head = previous.Following!;
       _headOffset = 0;
-      Return(previous);
+      if (_spare is null)
+      {
+        previous.Reset();
+        _spare = previous;
+      }
+      else
+        Return(previous);
     }
   }
 
@@ -374,7 +381,8 @@ internal sealed class JsonPathStreamReader : IDisposable
     }
     if (_tail.Written == _tail.Bytes.Length)
     {
-      var next = new Block();
+      var next = _spare ?? new Block();
+      _spare = null;
       _tail.Link(next);
       _tail = next;
     }
@@ -403,6 +411,11 @@ internal sealed class JsonPathStreamReader : IDisposable
       var next = block.Following;
       Return(block);
       block = next;
+    }
+    if (_spare is not null)
+    {
+      Return(_spare);
+      _spare = null;
     }
   }
 }

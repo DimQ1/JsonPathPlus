@@ -17,6 +17,23 @@ public sealed class JsonPathMemoryStreamingTests
     Assert.Equal("$[-2147483648]", new JsonPathLocation(JsonPathLocation.Root, int.MinValue).ToString());
   }
 
+  [Theory]
+  [InlineData(true)]
+  [InlineData(false)]
+  public async Task ByteCaps_ApplyToTokensOrCapturedValuesNotTheEntireStreamingArray(bool tokenCap)
+  {
+    var json = "{\"items\":[" + string.Join(",", Enumerable.Range(0, 3000)
+      .Select(i => $"{{\"id\":{i},\"payload\":\"tiny\"}}")) + "]}";
+    using var input = new CountingStream(Encoding.UTF8.GetBytes(json), false, 127, asyncOnly: true);
+    var options = tokenCap
+      ? new JsonPathExtractionOptions { MaxTokenBytes = 32 }
+      : new JsonPathExtractionOptions { MaxCapturedValueBytes = 16 };
+    var expected = 0;
+    await foreach (var result in input.ExtractAllJsonMatchesAsync("$.items[*].id", options))
+      Assert.Equal(expected++, result!.GetValue<int>());
+    Assert.Equal(3000, expected);
+  }
+
   [Fact]
   public async Task ExplicitMaxDepth_IsHonoredByStreamAndFallback()
   {

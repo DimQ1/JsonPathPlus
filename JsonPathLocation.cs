@@ -11,8 +11,10 @@ internal sealed class JsonPathLocation
   private readonly int _index;
   private readonly bool _simple;
   private readonly int _length = 1;
+  private string? _cached;
+  private int _children;
 
-  private JsonPathLocation() { }
+  private JsonPathLocation() => _cached = "$";
 
   public JsonPathLocation(JsonPathLocation parent, string property)
   {
@@ -20,6 +22,7 @@ internal sealed class JsonPathLocation
     _property = property;
     _simple = JsonPathMatcher.IsSimpleIdentifier(property);
     _length = checked(parent._length + PropertyLength(property, _simple));
+    parent.RegisterChild();
   }
 
   public JsonPathLocation(JsonPathLocation parent, int index)
@@ -34,13 +37,24 @@ internal sealed class JsonPathLocation
       number /= 10;
     } while (number > 0);
     _length = checked(parent._length + digits + 2);
+    parent.RegisterChild();
   }
 
   public override string ToString()
-    => string.Create(_length, this, static (text, location) =>
+    => _cached ?? string.Create(_length, this, static (text, location) =>
     {
-      for (var current = location; current._parent is not null; current = current._parent)
+      for (var current = location; ; current = current._parent!)
       {
+        if (current._cached is not null)
+        {
+          current._cached.AsSpan().CopyTo(text);
+          break;
+        }
+        if (current._parent is null)
+        {
+          text[0] = '$';
+          break;
+        }
         var segment = text[current._parent._length..current._length];
         if (current._property is not null)
           WriteProperty(segment, current._property, current._simple);
@@ -51,8 +65,14 @@ internal sealed class JsonPathLocation
           segment[^1] = ']';
         }
       }
-      text[0] = '$';
     });
+
+  private void RegisterChild()
+  {
+    // Cache only shared prefixes; one-off property chains stay allocation-free.
+    if (_cached is null && _children < 2 && ++_children == 2)
+      _cached = ToString();
+  }
 
   internal static string AppendProperty(string parent, string property)
   {

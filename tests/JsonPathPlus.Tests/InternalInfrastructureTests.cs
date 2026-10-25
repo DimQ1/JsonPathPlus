@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -182,40 +181,26 @@ public sealed class InternalInfrastructureTests
   }
 
   [Fact]
-  public void JsonPathFilterEvaluator_PrivateHelpers_CoverNumericAndJsonElementFallbacks()
+  public void JsonPathFilterValues_CoverNumericAndJsonElementFallbacks()
   {
-    var toPrimitive = typeof(JsonPathFilterEvaluator).GetMethod("ToPrimitive", BindingFlags.NonPublic | BindingFlags.Static)!;
-    var tryToDecimal = typeof(JsonPathFilterEvaluator).GetMethod("TryToDecimal", BindingFlags.NonPublic | BindingFlags.Static)!;
-
-    Assert.Equal(5L, toPrimitive.Invoke(null, [JsonValue.Create(5L)]));
-    Assert.Equal(5.5d, toPrimitive.Invoke(null, [JsonValue.Create(5.5d)]));
+    Assert.True(JsonPathFilterEvaluator.Evaluate(JsonValue.Create(5L), "@ == 5"));
+    Assert.True(JsonPathFilterEvaluator.Evaluate(JsonValue.Create(5.5d), "@ == 5.5"));
 
     using var numberDocument = JsonDocument.Parse("12345678901234567890");
     var numberElementNode = JsonValue.Create(numberDocument.RootElement);
-    Assert.NotNull(toPrimitive.Invoke(null, [numberElementNode]));
+    Assert.True(JsonPathFilterEvaluator.Evaluate(numberElementNode, "@ == 12345678901234567890"));
 
     using var stringDocument = JsonDocument.Parse("\"hello\"");
-    Assert.Equal("hello", toPrimitive.Invoke(null, [JsonValue.Create(stringDocument.RootElement)]));
+    Assert.True(JsonPathFilterEvaluator.Evaluate(JsonValue.Create(stringDocument.RootElement), "@ == 'hello'"));
 
     using var trueDocument = JsonDocument.Parse("true");
-    Assert.Equal(true, toPrimitive.Invoke(null, [JsonValue.Create(trueDocument.RootElement)]));
+    Assert.True(JsonPathFilterEvaluator.Evaluate(JsonValue.Create(trueDocument.RootElement), "@ == true"));
 
     using var nullDocument = JsonDocument.Parse("null");
-    Assert.Null(toPrimitive.Invoke(null, [JsonValue.Create(nullDocument.RootElement)]));
-
-    AssertTryToDecimal(tryToDecimal, (byte)1, true, 1m);
-    AssertTryToDecimal(tryToDecimal, (sbyte)2, true, 2m);
-    AssertTryToDecimal(tryToDecimal, (short)3, true, 3m);
-    AssertTryToDecimal(tryToDecimal, (ushort)4, true, 4m);
-    AssertTryToDecimal(tryToDecimal, 5, true, 5m);
-    AssertTryToDecimal(tryToDecimal, (uint)6, true, 6m);
-    AssertTryToDecimal(tryToDecimal, 7L, true, 7m);
-    AssertTryToDecimal(tryToDecimal, (ulong)8, true, 8m);
-    AssertTryToDecimal(tryToDecimal, 9.5f, true, 9.5m);
-    AssertTryToDecimal(tryToDecimal, 10.5d, true, 10.5m);
-    AssertTryToDecimal(tryToDecimal, 11.5m, true, 11.5m);
-    AssertTryToDecimal(tryToDecimal, "12.5", true, 12.5m);
-    AssertTryToDecimal(tryToDecimal, new object(), false, 0m);
+    var nullValue = JsonPathFilterValue.FromElement(nullDocument.RootElement);
+    Assert.True(nullValue.Compare(default, JsonPathFilterOp.Equal));
+    Assert.True(JsonPathFilterEvaluator.Evaluate(JsonValue.Create(11.5m), "@ == 11.5"));
+    Assert.True(JsonPathFilterEvaluator.Evaluate(JsonValue.Create("12.5"), "@ == 12.5"));
   }
 
   [Fact]
@@ -285,13 +270,4 @@ public sealed class InternalInfrastructureTests
   private static JsonPathSegment Property(string name)
     => new(name, -1, -1, JsonPathSegmentType.Property);
 
-  private static void AssertTryToDecimal(MethodInfo method, object value, bool expectedSuccess, decimal expectedNumber)
-  {
-    object?[] args = [value, 0m];
-    var success = (bool)method.Invoke(null, args)!;
-
-    Assert.Equal(expectedSuccess, success);
-    if (expectedSuccess)
-      Assert.Equal(expectedNumber, (decimal)args[1]!);
-  }
 }

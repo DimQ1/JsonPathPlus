@@ -9,6 +9,44 @@ Lightweight JSONPath-like `Stream` extensions for `System.Text.Json`.
 Extracts JSON subtrees from a `Stream` by path expression.
 Uses streaming selectors for root arrays and root objects, with automatic full-parse fallback when a selector requires full-document evaluation.
 
+### Memory-efficient array filtering
+
+Stream inputs are read incrementally, including arrays nested below property selectors
+such as `$.data.items[?(@.score >= 750)].name`. Filters evaluate a read-only
+`JsonElement` for each candidate; only returned values are materialized as `JsonNode`.
+Results are yielded as they are found, without collecting the complete result set.
+Non-seekable streams replay only their small inspected prefix, not a copy of the input.
+
+For these selectors, working memory depends on the read buffer, the largest candidate
+element (or individual JSON token), and the selected value, rather than the entire array.
+Selectors requiring array length, reordered unions, recursive evaluation, or transformations
+may buffer the relevant subtree. Selecting the whole document or a whole array still
+requires materializing that result.
+
+To keep memory low, pass a file/network stream directly, process results with
+`await foreach` rather than accumulating them, and use `ExtractFirstJsonMatchAsync`
+when only one result is needed. String inputs still require a UTF-8 encoding buffer.
+For an existing `JsonNode`, results are traversed lazily but the original DOM remains in memory.
+
+Stopping enumeration early stops further parsing; malformed JSON after the consumed
+portion is not guaranteed to be detected. Seekable input positions are restored and
+caller-owned streams remain open, including after early disposal or cancellation.
+
+The allocation benchmarks can be reproduced with:
+
+```powershell
+dotnet run --project tests\JsonPathPlus.Benchmarks\JsonPathPlus.Benchmarks.csproj --framework net8.0 --configuration Release -- --filter "*JsonPathFilterAllocationBenchmarks*" "*JsonPathStreamingMemoryBenchmarks*"
+```
+
+In a .NET 8.0.28 ShortRun, the pre-parsed filter benchmark allocated 1,360 bytes
+for the first match and 1,528 bytes for all matches. Stream first-match allocations
+were unchanged between 1,000 and 100,000 elements: 2.81 KB for a seekable root array
+and 3.73 KB for a seekable nested array (2.98 KB and 3.90 KB for non-seekable inputs).
+These are managed allocations, not peak working set or pooled-buffer capacity.
+Enumerating an entire array still allocates per-candidate read-only documents, but
+does not retain all candidates or matches. Regression tests also verify that the
+first result requires reading no more than 32 KB of a much larger input.
+
 ## Installation
 
 ```
@@ -161,6 +199,8 @@ Passing `null` or `"$"` as `selectToken` returns the entire document.
 All extraction APIs accept an optional `CancellationToken`.
 
 `JsonPathExtractionOptions.FullParseMaxBytes` lets you cap fallback full-document parsing by stream size. Streaming selectors are still allowed under this cap.
+This is not a global memory limit: it does not cap a streamed candidate, a selected
+subtree, results retained by the caller, or buffers used by subtree fallback.
 
 ### Path validation
 

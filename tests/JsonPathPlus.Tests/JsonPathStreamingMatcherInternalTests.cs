@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Text;
 using System.Text.Json.Nodes;
 using System.Threading;
@@ -253,31 +252,27 @@ public sealed class JsonPathStreamingMatcherInternalTests
   }
 
   [Fact]
-  public async Task PrivateReadToEndAsync_CoversSeekableAndNonSeekablePaths()
+  public async Task IncrementalReader_CoversSeekableAndPrefixedNonSeekableStreams()
   {
-    var method = typeof(JsonPathStreamingMatcher)
-      .GetMethods(BindingFlags.NonPublic | BindingFlags.Static)
-      .Single(m => m.Name == "ReadToEndAsync"
-        && m.GetParameters().Length == 3
-        && m.GetParameters()[1].ParameterType == typeof(byte[]));
-
     using var seekableStream = CreateSeekableStream("[1,2,3]");
-    var seekableResult = await InvokeReadToEndAsync(method, seekableStream, null);
-    Assert.Equal("[1,2,3]", Encoding.UTF8.GetString(seekableResult));
+    using var reader = new JsonPathStreamReader(seekableStream, CancellationToken.None);
+    Assert.True(await reader.ReadAsync());
+    using var array = await reader.ReadValueAsync();
+    Assert.Equal("[1,2,3]", array.RootElement.GetRawText());
 
     using var nonSeekableStream = new NonSeekableStream(Encoding.UTF8.GetBytes("{\"id\":1}"));
-    var headedResult = await InvokeReadToEndAsync(method, nonSeekableStream, Encoding.UTF8.GetBytes(" "));
-    Assert.Equal(" {\"id\":1}", Encoding.UTF8.GetString(headedResult));
+    using var prefixed = new PrefixReadStream(Encoding.UTF8.GetBytes(" "), nonSeekableStream);
+    using var prefixedReader = new JsonPathStreamReader(prefixed, CancellationToken.None);
+    Assert.True(await prefixedReader.ReadAsync());
+    using var obj = await prefixedReader.ReadValueAsync();
+    Assert.Equal(1, obj.RootElement.GetProperty("id").GetInt32());
   }
 
   [Fact]
   public void AppendPropertyPath_UsesBracketPathsForSpecialIdentifiers()
   {
-    var method = typeof(JsonPathStreamingMatcher)
-      .GetMethod("AppendPropertyPath", BindingFlags.NonPublic | BindingFlags.Static)!;
-
-    Assert.Equal("$['']", (string)method.Invoke(null, ["$", ""])!);
-    Assert.Equal("$['1name']", (string)method.Invoke(null, ["$", "1name"])!);
+    Assert.Equal("$['']", JsonPathMatcher.AppendPropertyPath("$", ""));
+    Assert.Equal("$['1name']", JsonPathMatcher.AppendPropertyPath("$", "1name"));
   }
 
   [Fact]
@@ -310,9 +305,6 @@ public sealed class JsonPathStreamingMatcherInternalTests
       list.Add(item);
     return list;
   }
-
-  private static async Task<byte[]> InvokeReadToEndAsync(MethodInfo method, Stream stream, byte[]? head)
-    => await (Task<byte[]>)method.Invoke(null, [stream, head, CancellationToken.None])!;
 
   private static List<JsonPathSegment> Segments(params JsonPathSegment[] segments)
     => new(segments);

@@ -34,7 +34,7 @@ internal static class JsonPathExtractionCore
       yield break;
     }
 
-    foreach (var match in JsonPathMatcher.FindMatches(root, segments, startIndex))
+    foreach (var match in JsonPathMatcher.EnumerateMatches(root, segments, startIndex))
       yield return match;
   }
 
@@ -56,7 +56,7 @@ internal static class JsonPathExtractionCore
       yield break;
     }
 
-    foreach (var match in JsonPathMatcher.FindMatchesWithPaths(root, segments, startIndex, rootPath))
+    foreach (var match in JsonPathMatcher.EnumerateMatchesWithPaths(root, segments, startIndex, rootPath))
       yield return match;
   }
 }

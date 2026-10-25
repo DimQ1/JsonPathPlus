@@ -1,5 +1,6 @@
 using System;
 using System.Globalization;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 
 namespace JsonPathPlus;
@@ -16,7 +17,7 @@ internal enum JsonPathFilterOp
 
 /// <summary>
 /// A pre-compiled JSONPath filter expression. The filter text is parsed once,
-/// then evaluated against many candidates without re-parsing or allocating.
+/// then evaluated against many candidates without re-parsing.
 /// </summary>
 internal abstract class JsonPathFilterNode
 {
@@ -31,6 +32,7 @@ internal abstract class JsonPathFilterNode
   };
 
   public abstract bool Evaluate(JsonNode? candidate);
+  public abstract bool Evaluate(JsonElement candidate);
 
   public static JsonPathFilterNode Compile(string expression)
     => CompileSpan(expression.AsSpan().Trim());
@@ -74,25 +76,25 @@ internal abstract class JsonPathFilterNode
       return JsonPathCurrentOperand.Instance;
 
     if (token.Length >= 2 && token[0] == '"' && token[^1] == '"')
-      return new JsonPathLiteralOperand(token[1..^1].ToString());
+      return new JsonPathLiteralOperand(JsonPathFilterValue.FromString(token[1..^1].ToString()));
 
     if (token.Length >= 2 && token[0] == '\'' && token[^1] == '\'')
-      return new JsonPathLiteralOperand(token[1..^1].ToString());
+      return new JsonPathLiteralOperand(JsonPathFilterValue.FromString(token[1..^1].ToString()));
 
     if (MemoryExtensions.Equals(token, "true", StringComparison.OrdinalIgnoreCase))
-      return new JsonPathLiteralOperand(true);
+      return new JsonPathLiteralOperand(JsonPathFilterValue.FromBoolean(true));
 
     if (MemoryExtensions.Equals(token, "false", StringComparison.OrdinalIgnoreCase))
-      return new JsonPathLiteralOperand(false);
+      return new JsonPathLiteralOperand(JsonPathFilterValue.FromBoolean(false));
 
     if (MemoryExtensions.Equals(token, "null", StringComparison.OrdinalIgnoreCase))
-      return new JsonPathLiteralOperand(null);
+      return new JsonPathLiteralOperand(default);
 
     if (token.IsEmpty || !IsNumberStart(token[0]))
       return JsonPathInvalidOperand.Instance;
 
     if (decimal.TryParse(token, NumberStyles.Float, CultureInfo.InvariantCulture, out var number))
-      return new JsonPathLiteralOperand(number);
+      return new JsonPathLiteralOperand(JsonPathFilterValue.FromNumber(number));
 
     return JsonPathInvalidOperand.Instance;
   }
@@ -153,6 +155,8 @@ internal abstract class JsonPathFilterNode
 
     public override bool Evaluate(JsonNode? candidate)
       => _left.Evaluate(candidate) || _right.Evaluate(candidate);
+    public override bool Evaluate(JsonElement candidate)
+      => _left.Evaluate(candidate) || _right.Evaluate(candidate);
   }
 
   private sealed class JsonPathAndNode : JsonPathFilterNode
@@ -168,6 +172,8 @@ internal abstract class JsonPathFilterNode
 
     public override bool Evaluate(JsonNode? candidate)
       => _left.Evaluate(candidate) && _right.Evaluate(candidate);
+    public override bool Evaluate(JsonElement candidate)
+      => _left.Evaluate(candidate) && _right.Evaluate(candidate);
   }
 
   private sealed class JsonPathNotNode : JsonPathFilterNode
@@ -179,6 +185,8 @@ internal abstract class JsonPathFilterNode
 
     public override bool Evaluate(JsonNode? candidate)
       => !_child.Evaluate(candidate);
+    public override bool Evaluate(JsonElement candidate)
+      => !_child.Evaluate(candidate);
   }
 
   private sealed class JsonPathExistsNode : JsonPathFilterNode
@@ -189,6 +197,8 @@ internal abstract class JsonPathFilterNode
       => _operand = operand;
 
     public override bool Evaluate(JsonNode? candidate)
+      => _operand.TryResolve(candidate, out _);
+    public override bool Evaluate(JsonElement candidate)
       => _operand.TryResolve(candidate, out _);
   }
 
@@ -213,8 +223,13 @@ internal abstract class JsonPathFilterNode
       if (!_right.TryResolve(candidate, out var right))
         return false;
 
-      return JsonPathFilterEvaluator.CompareValues(left, right, _op);
+      return left.Compare(right, _op);
     }
+
+    public override bool Evaluate(JsonElement candidate)
+      => _left.TryResolve(candidate, out var left)
+         && _right.TryResolve(candidate, out var right)
+         && left.Compare(right, _op);
   }
 
   private sealed class JsonPathFilterConstant : JsonPathFilterNode
@@ -223,11 +238,14 @@ internal abstract class JsonPathFilterNode
 
     public override bool Evaluate(JsonNode? candidate)
       => false;
+    public override bool Evaluate(JsonElement candidate)
+      => false;
   }
 
   private abstract class JsonPathFilterOperand
   {
-    public abstract bool TryResolve(JsonNode? candidate, out object? value);
+    public abstract bool TryResolve(JsonNode? candidate, out JsonPathFilterValue value);
+    public abstract bool TryResolve(JsonElement candidate, out JsonPathFilterValue value);
   }
 
   private sealed class JsonPathOperand : JsonPathFilterOperand
@@ -237,7 +255,7 @@ internal abstract class JsonPathFilterNode
     public JsonPathOperand(ReadOnlySpan<char> path)
       => _parts = path.ToString().Split('.', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-    public override bool TryResolve(JsonNode? candidate, out object? value)
+    public override bool TryResolve(JsonNode? candidate, out JsonPathFilterValue value)
     {
       JsonNode? current = candidate;
 
@@ -245,13 +263,29 @@ internal abstract class JsonPathFilterNode
       {
         if (current is not JsonObject obj || !obj.TryGetPropertyValue(part, out current))
         {
-          value = null;
+          value = default;
           return false;
         }
       }
 
-      value = JsonPathFilterEvaluator.ToPrimitive(current);
+      value = JsonPathFilterValue.FromNode(current);
       return current is not null;
+    }
+
+    public override bool TryResolve(JsonElement candidate, out JsonPathFilterValue value)
+    {
+      var current = candidate;
+      foreach (var part in _parts)
+      {
+        if (current.ValueKind != JsonValueKind.Object || !current.TryGetProperty(part, out current))
+        {
+          value = default;
+          return false;
+        }
+      }
+
+      value = JsonPathFilterValue.FromElement(current);
+      return current.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined);
     }
   }
 
@@ -259,21 +293,33 @@ internal abstract class JsonPathFilterNode
   {
     public static readonly JsonPathCurrentOperand Instance = new();
 
-    public override bool TryResolve(JsonNode? candidate, out object? value)
+    public override bool TryResolve(JsonNode? candidate, out JsonPathFilterValue value)
     {
-      value = JsonPathFilterEvaluator.ToPrimitive(candidate);
+      value = JsonPathFilterValue.FromNode(candidate);
       return candidate is not null;
+    }
+
+    public override bool TryResolve(JsonElement candidate, out JsonPathFilterValue value)
+    {
+      value = JsonPathFilterValue.FromElement(candidate);
+      return candidate.ValueKind is not (JsonValueKind.Null or JsonValueKind.Undefined);
     }
   }
 
   private sealed class JsonPathLiteralOperand : JsonPathFilterOperand
   {
-    private readonly object? _value;
+    private readonly JsonPathFilterValue _value;
 
-    public JsonPathLiteralOperand(object? value)
+    public JsonPathLiteralOperand(JsonPathFilterValue value)
       => _value = value;
 
-    public override bool TryResolve(JsonNode? candidate, out object? value)
+    public override bool TryResolve(JsonNode? candidate, out JsonPathFilterValue value)
+    {
+      value = _value;
+      return true;
+    }
+
+    public override bool TryResolve(JsonElement candidate, out JsonPathFilterValue value)
     {
       value = _value;
       return true;
@@ -284,9 +330,15 @@ internal abstract class JsonPathFilterNode
   {
     public static readonly JsonPathInvalidOperand Instance = new();
 
-    public override bool TryResolve(JsonNode? candidate, out object? value)
+    public override bool TryResolve(JsonNode? candidate, out JsonPathFilterValue value)
     {
-      value = null;
+      value = default;
+      return false;
+    }
+
+    public override bool TryResolve(JsonElement candidate, out JsonPathFilterValue value)
+    {
+      value = default;
       return false;
     }
   }

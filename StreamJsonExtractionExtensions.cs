@@ -53,13 +53,14 @@ public static class StreamJsonExtractionExtensions
 
     var segments = JsonPathExtractionCore.ParseSegments(selectToken);
 
-    var head = JsonPathStreamingMatcher.CanUseStreaming(stream, segments);
-    if (head.HasValue)
-      return await JsonPathStreamingMatcher.ExtractFirstMatchAsync(stream, segments, head.Value, cancellationToken);
+    var head = segments.Count > 0 ? await JsonPathStreamingMatcher.PeekStreamHeadAsync(stream, cancellationToken).ConfigureAwait(false) : default;
+    if (segments.Count > 0 && JsonPathStreamingMatcher.CanStream(head.RootKind, segments[0]))
+      return await JsonPathStreamingMatcher.ExtractFirstMatchAsync(stream, segments, head, cancellationToken);
 
     EnsureFullParseAllowed(stream, options);
 
-    var root = await JsonNode.ParseAsync(stream, nodeOptions: default, documentOptions: default, cancellationToken).ConfigureAwait(false);
+    using var prefixed = head.HeadBytes is { Length: > 0 } ? new PrefixReadStream(head.HeadBytes, stream) : null;
+    var root = await JsonNode.ParseAsync(prefixed ?? stream, nodeOptions: default, documentOptions: default, cancellationToken).ConfigureAwait(false);
     return JsonPathExtractionCore.FindFirstMatch(root, segments);
   }
 
@@ -94,17 +95,18 @@ public static class StreamJsonExtractionExtensions
 
     var segments = JsonPathExtractionCore.ParseSegments(selectToken);
 
-    var head = JsonPathStreamingMatcher.CanUseStreaming(stream, segments);
-    if (head.HasValue)
+    var head = segments.Count > 0 ? await JsonPathStreamingMatcher.PeekStreamHeadAsync(stream, cancellationToken).ConfigureAwait(false) : default;
+    if (segments.Count > 0 && JsonPathStreamingMatcher.CanStream(head.RootKind, segments[0]))
     {
-      await foreach (var match in JsonPathStreamingMatcher.ExtractAllMatchesAsync(stream, segments, head.Value, cancellationToken))
+      await foreach (var match in JsonPathStreamingMatcher.ExtractAllMatchesAsync(stream, segments, head, cancellationToken))
         yield return match;
       yield break;
     }
 
     EnsureFullParseAllowed(stream, options);
 
-    var root = await JsonNode.ParseAsync(stream, nodeOptions: default, documentOptions: default, cancellationToken).ConfigureAwait(false);
+    using var prefixed = head.HeadBytes is { Length: > 0 } ? new PrefixReadStream(head.HeadBytes, stream) : null;
+    var root = await JsonNode.ParseAsync(prefixed ?? stream, nodeOptions: default, documentOptions: default, cancellationToken).ConfigureAwait(false);
     foreach (var match in JsonPathExtractionCore.FindAllMatches(root, segments))
       yield return match;
   }
@@ -140,17 +142,18 @@ public static class StreamJsonExtractionExtensions
 
     var segments = JsonPathExtractionCore.ParseSegments(selectToken);
 
-    var head = JsonPathStreamingMatcher.CanUseStreaming(stream, segments);
-    if (head.HasValue)
+    var head = segments.Count > 0 ? await JsonPathStreamingMatcher.PeekStreamHeadAsync(stream, cancellationToken).ConfigureAwait(false) : default;
+    if (segments.Count > 0 && JsonPathStreamingMatcher.CanStream(head.RootKind, segments[0]))
     {
-      await foreach (var match in JsonPathStreamingMatcher.ExtractAllMatchesWithPathsAsync(stream, segments, head.Value, cancellationToken))
+      await foreach (var match in JsonPathStreamingMatcher.ExtractAllMatchesWithPathsAsync(stream, segments, head, cancellationToken))
         yield return match;
       yield break;
     }
 
     EnsureFullParseAllowed(stream, options);
 
-    var root = await JsonNode.ParseAsync(stream, nodeOptions: default, documentOptions: default, cancellationToken).ConfigureAwait(false);
+    using var prefixed = head.HeadBytes is { Length: > 0 } ? new PrefixReadStream(head.HeadBytes, stream) : null;
+    var root = await JsonNode.ParseAsync(prefixed ?? stream, nodeOptions: default, documentOptions: default, cancellationToken).ConfigureAwait(false);
     foreach (var match in JsonPathExtractionCore.FindAllMatchesWithPaths(root, segments))
       yield return match;
   }
@@ -377,7 +380,7 @@ public static class StreamJsonExtractionExtensions
 
   private static RentedUtf8Stream RentUtf8Stream(string json)
   {
-    var maxByteCount = Encoding.UTF8.GetMaxByteCount(json.Length);
+    var maxByteCount = Encoding.UTF8.GetByteCount(json);
     var rented = ArrayPool<byte>.Shared.Rent(maxByteCount);
     var actualLength = Encoding.UTF8.GetBytes(json.AsSpan(), rented);
     var stream = new ReadOnlyMemoryStream(new ReadOnlyMemory<byte>(rented, 0, actualLength));

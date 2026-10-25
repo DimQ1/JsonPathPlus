@@ -1,9 +1,7 @@
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.IO;
-using System.Linq;
-using System.Text;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Threading;
@@ -13,19 +11,8 @@ namespace JsonPathPlus;
 
 internal static class JsonPathStreamingMatcher
 {
-  internal enum RootContainerKind
-  {
-    None,
-    Array,
-    Object
-  }
+  internal enum RootContainerKind { None, Array, Object }
 
-  private readonly record struct ElementPathMatch(JsonElement Element, string Path);
-
-  /// <summary>
-  /// Captures the root container kind and any bytes consumed during the initial peek,
-  /// so downstream extraction can continue from the correct position without re-seeking.
-  /// </summary>
   public readonly record struct StreamHead
   {
     public RootContainerKind RootKind { get; init; }
@@ -33,33 +20,19 @@ internal static class JsonPathStreamingMatcher
     public bool IsEmpty => RootKind == RootContainerKind.None;
   }
 
-  /// <summary>
-  /// Determines whether the stream can use the optimized streaming path.
-  /// Returns a <see cref="StreamHead"/> if streaming is possible, or <c>null</c> otherwise.
-  /// The caller must pass the returned <see cref="StreamHead"/> to the corresponding extract method.
-  /// Does not require the stream to be seekable.
-  /// </summary>
   public static StreamHead? CanUseStreaming(Stream stream, List<JsonPathSegment> segments)
   {
     if (segments.Count == 0)
       return null;
 
     var head = PeekStreamHead(stream);
-    if (head.IsEmpty)
-      return null;
+    return CanStream(head.RootKind, segments[0]) ? head : null;
+  }
 
-    var first = segments[0];
-    var canStream = head.RootKind switch
+  internal static bool CanStream(RootContainerKind rootKind, JsonPathSegment first)
+    => rootKind switch
     {
-      RootContainerKind.Array => first.SegmentType switch
-      {
-        JsonPathSegmentType.Wildcard => true,
-        JsonPathSegmentType.ArrayIndex => first.ArrayIndex >= 0,
-        JsonPathSegmentType.ArrayRange => first.ArrayIndex >= 0 && (first.ArrayRangeEnd == int.MaxValue || first.ArrayRangeEnd >= 0),
-        JsonPathSegmentType.ArrayUnion => first.ArrayUnionIndices is not null && first.ArrayUnionIndices.All(static i => i >= 0),
-        JsonPathSegmentType.Filter => !string.IsNullOrWhiteSpace(first.FilterExpression),
-        _ => false
-      },
+      RootContainerKind.Array => CanStreamArray(first),
       RootContainerKind.Object => first.SegmentType switch
       {
         JsonPathSegmentType.Property => !string.IsNullOrWhiteSpace(first.PropertyName),
@@ -70,30 +43,217 @@ internal static class JsonPathStreamingMatcher
       _ => false
     };
 
-    return canStream ? head : null;
+  private static bool CanStreamArray(JsonPathSegment segment)
+    => segment.SegmentType switch
+    {
+      JsonPathSegmentType.Wildcard => true,
+      JsonPathSegmentType.ArrayIndex => segment.ArrayIndex >= 0,
+      JsonPathSegmentType.ArrayRange => segment.ArrayIndex >= 0 && segment.ArrayRangeEnd >= 0,
+      JsonPathSegmentType.ArrayUnion => AllNonNegative(segment.ArrayUnionIndices),
+      JsonPathSegmentType.Filter => !string.IsNullOrWhiteSpace(segment.FilterExpression),
+      _ => false
+    };
+
+  private static bool AllNonNegative(int[]? indices)
+  {
+    if (indices is null)
+      return false;
+    foreach (var index in indices)
+    {
+      if (index < 0)
+        return false;
+    }
+    return true;
   }
 
-  /// <summary>
-  /// Extracts the first match using the pre-peeked stream head.
-  /// The stream position must be immediately after the bytes captured in <paramref name="head"/>.
-  /// For seekable streams, the position is restored after extraction.
-  /// </summary>
-  public static async Task<JsonNode?> ExtractFirstMatchAsync(Stream stream, List<JsonPathSegment> segments, StreamHead head, CancellationToken cancellationToken = default)
+  public static async Task<JsonNode?> ExtractFirstMatchAsync(
+    Stream stream, List<JsonPathSegment> segments, StreamHead head, CancellationToken cancellationToken = default)
   {
+    await foreach (var match in ExtractAsync(stream, segments, head, false, cancellationToken))
+      return match.Value;
+    return null;
+  }
+
+  public static async IAsyncEnumerable<JsonNode?> ExtractAllMatchesAsync(
+    Stream stream, List<JsonPathSegment> segments, StreamHead head,
+    [EnumeratorCancellation] CancellationToken cancellationToken = default)
+  {
+    await foreach (var match in ExtractAsync(stream, segments, head, false, cancellationToken))
+      yield return match.Value;
+  }
+
+  public static async IAsyncEnumerable<JsonPathMatch> ExtractAllMatchesWithPathsAsync(
+    Stream stream, List<JsonPathSegment> segments, StreamHead head,
+    [EnumeratorCancellation] CancellationToken cancellationToken = default)
+  {
+    await foreach (var match in ExtractAsync(stream, segments, head, true, cancellationToken))
+      yield return new JsonPathMatch(match.Path, match.Value);
+  }
+
+  private static async IAsyncEnumerable<JsonPathValueMatch> ExtractAsync(
+    Stream stream, List<JsonPathSegment> segments, StreamHead head, bool withPaths,
+    [EnumeratorCancellation] CancellationToken cancellationToken)
+  {
+    if (head.IsEmpty)
+      yield break;
+
     var origin = stream.CanSeek ? stream.Position : -1;
+    using var prefixed = head.HeadBytes is { Length: > 0 } ? new PrefixReadStream(head.HeadBytes, stream) : null;
+    using var reader = new JsonPathStreamReader(prefixed ?? stream, cancellationToken);
     try
     {
-      using var effectiveStream = head.HeadBytes is { Length: > 0 }
-        ? CreateHeadPrependedStream(head.HeadBytes, stream)
-        : null;
-
-      var targetStream = effectiveStream ?? stream;
-
-      return head.RootKind switch
+      if (await reader.ReadAsync().ConfigureAwait(false))
       {
-        RootContainerKind.Array => await ExtractFirstArrayRootMatchAsync(targetStream, segments, cancellationToken),
-        RootContainerKind.Object => await ExtractFirstObjectRootMatchAsync(targetStream, segments, cancellationToken),
-        _ => null
+        await foreach (var match in TraverseAsync(reader, segments, 0, withPaths ? "$" : null, cancellationToken))
+          yield return match;
+      }
+    }
+    finally
+    {
+      if (origin >= 0)
+        stream.Position = origin;
+    }
+  }
+
+  private static async IAsyncEnumerable<JsonPathValueMatch> TraverseAsync(
+    JsonPathStreamReader reader, List<JsonPathSegment> segments, int segmentIndex, string? path,
+    [EnumeratorCancellation] CancellationToken cancellationToken)
+  {
+    cancellationToken.ThrowIfCancellationRequested();
+    if (segmentIndex >= segments.Count)
+    {
+      using var document = await reader.ReadValueAsync().ConfigureAwait(false);
+      yield return new JsonPathValueMatch(path ?? "$", JsonPathElementMatcher.Materialize(document.RootElement));
+      yield break;
+    }
+
+    var segment = segments[segmentIndex];
+    if ((segment.SegmentType is JsonPathSegmentType.Property or JsonPathSegmentType.PropertyUnion
+          && reader.TokenType != JsonTokenType.StartObject)
+        || (segment.SegmentType is JsonPathSegmentType.ArrayIndex or JsonPathSegmentType.ArrayRange
+          or JsonPathSegmentType.ArrayUnion or JsonPathSegmentType.ComputedIndex
+          && reader.TokenType != JsonTokenType.StartArray)
+        || (segment.SegmentType is JsonPathSegmentType.Wildcard or JsonPathSegmentType.Filter
+          && reader.TokenType is not (JsonTokenType.StartArray or JsonTokenType.StartObject)))
+    {
+      await reader.SkipValueAsync().ConfigureAwait(false);
+      yield break;
+    }
+
+    if (reader.TokenType == JsonTokenType.StartArray && CanStreamArray(segment)
+        && (segmentIndex == 0 || segment.SegmentType != JsonPathSegmentType.ArrayUnion))
+    {
+      var index = 0;
+      var filter = segment.SegmentType == JsonPathSegmentType.Filter
+        ? segment.FilterNode ?? JsonPathFilterNode.Compile(segment.FilterExpression!)
+        : null;
+      while (await reader.ReadAsync().ConfigureAwait(false))
+      {
+        if (reader.TokenType == JsonTokenType.EndArray)
+          yield break;
+
+        var selected = segment.SegmentType switch
+        {
+          JsonPathSegmentType.ArrayIndex => index == segment.ArrayIndex,
+          JsonPathSegmentType.ArrayRange => index >= segment.ArrayIndex && index < segment.ArrayRangeEnd,
+          JsonPathSegmentType.ArrayUnion => Array.IndexOf(segment.ArrayUnionIndices!, index) >= 0,
+          _ => true
+        };
+
+        if (!selected)
+        {
+          await reader.SkipValueAsync().ConfigureAwait(false);
+        }
+        else if (filter is not null)
+        {
+          using var document = await reader.ReadValueAsync().ConfigureAwait(false);
+          if (filter.Evaluate(document.RootElement))
+          {
+            foreach (var match in JsonPathElementMatcher.FindMatches(document.RootElement, segments,
+              segmentIndex + 1, path is null ? null : JsonPathElementMatcher.ArrayPath(path, index)))
+            {
+              cancellationToken.ThrowIfCancellationRequested();
+              yield return match;
+            }
+          }
+        }
+        else
+        {
+          await foreach (var match in TraverseAsync(reader, segments, segmentIndex + 1,
+            path is null ? null : JsonPathElementMatcher.ArrayPath(path, index), cancellationToken))
+            yield return match;
+        }
+
+        index++;
+      }
+      throw new JsonException("Incomplete JSON array.");
+    }
+
+    if (reader.TokenType == JsonTokenType.StartObject
+        && segment.SegmentType is JsonPathSegmentType.Property or JsonPathSegmentType.PropertyUnion or JsonPathSegmentType.Wildcard
+        && (segmentIndex == 0 || segment.SegmentType != JsonPathSegmentType.PropertyUnion))
+    {
+      while (await reader.ReadAsync().ConfigureAwait(false))
+      {
+        if (reader.TokenType == JsonTokenType.EndObject)
+          yield break;
+        if (reader.TokenType != JsonTokenType.PropertyName)
+          throw new JsonException("Expected a JSON property.");
+
+        var name = reader.PropertyName!;
+        var selected = segment.SegmentType switch
+        {
+          JsonPathSegmentType.Property => string.Equals(segment.PropertyName, name, StringComparison.Ordinal),
+          JsonPathSegmentType.PropertyUnion => segment.PropertyUnionNames is not null
+            && Array.IndexOf(segment.PropertyUnionNames, name) >= 0,
+          _ => true
+        };
+        if (!await reader.ReadAsync().ConfigureAwait(false))
+          throw new JsonException("Missing JSON property value.");
+
+        if (selected)
+        {
+          await foreach (var match in TraverseAsync(reader, segments, segmentIndex + 1,
+            path is null ? null : JsonPathElementMatcher.PropertyPath(path, name), cancellationToken))
+            yield return match;
+        }
+        else
+        {
+          await reader.SkipValueAsync().ConfigureAwait(false);
+        }
+      }
+      throw new JsonException("Incomplete JSON object.");
+    }
+
+    using var subtree = await reader.ReadValueAsync().ConfigureAwait(false);
+    foreach (var match in JsonPathElementMatcher.FindMatches(subtree.RootElement, segments, segmentIndex, path))
+    {
+      cancellationToken.ThrowIfCancellationRequested();
+      yield return match;
+    }
+  }
+
+  internal static StreamHead PeekStreamHead(Stream stream)
+  {
+    var origin = stream.CanSeek ? stream.Position : -1;
+    var bytes = new byte[64];
+    var length = 0;
+    try
+    {
+      // Short reads may split the BOM or leave only whitespace in the first read.
+      while (length < bytes.Length)
+      {
+        var read = stream.Read(bytes, length, bytes.Length - length);
+        if (read == 0)
+          break;
+        length += read;
+        if (DetectRoot(bytes.AsSpan(0, length)) != RootContainerKind.None)
+          break;
+      }
+      return new StreamHead
+      {
+        RootKind = DetectRoot(bytes.AsSpan(0, length)),
+        HeadBytes = origin >= 0 ? null : bytes.AsSpan(0, length).ToArray()
       };
     }
     finally
@@ -103,32 +263,27 @@ internal static class JsonPathStreamingMatcher
     }
   }
 
-  /// <summary>
-  /// Extracts all matches using the pre-peeked stream head.
-  /// The stream position must be immediately after the bytes captured in <paramref name="head"/>.
-  /// For seekable streams, the position is restored after extraction.
-  /// </summary>
-  public static async IAsyncEnumerable<JsonNode?> ExtractAllMatchesAsync(Stream stream, List<JsonPathSegment> segments, StreamHead head, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+  internal static async ValueTask<StreamHead> PeekStreamHeadAsync(Stream stream, CancellationToken cancellationToken)
   {
     var origin = stream.CanSeek ? stream.Position : -1;
+    var bytes = new byte[64];
+    var length = 0;
     try
     {
-      using var effectiveStream = head.HeadBytes is { Length: > 0 }
-        ? CreateHeadPrependedStream(head.HeadBytes, stream)
-        : null;
-
-      var targetStream = effectiveStream ?? stream;
-
-      if (head.RootKind == RootContainerKind.Array)
+      while (length < bytes.Length)
       {
-        await foreach (var match in ExtractAllArrayRootMatchesAsync(targetStream, segments, cancellationToken))
-          yield return match;
+        var read = await stream.ReadAsync(bytes.AsMemory(length), cancellationToken).ConfigureAwait(false);
+        if (read == 0)
+          break;
+        length += read;
+        if (DetectRoot(bytes.AsSpan(0, length)) != RootContainerKind.None)
+          break;
       }
-      else if (head.RootKind == RootContainerKind.Object)
+      return new StreamHead
       {
-        await foreach (var match in ExtractAllObjectRootMatchesAsync(targetStream, segments, cancellationToken))
-          yield return match;
-      }
+        RootKind = DetectRoot(bytes.AsSpan(0, length)),
+        HeadBytes = origin >= 0 ? null : bytes.AsSpan(0, length).ToArray()
+      };
     }
     finally
     {
@@ -137,1005 +292,20 @@ internal static class JsonPathStreamingMatcher
     }
   }
 
-  /// <summary>
-  /// Extracts all matches with paths using the pre-peeked stream head.
-  /// The stream position must be immediately after the bytes captured in <paramref name="head"/>.
-  /// For seekable streams, the position is restored after extraction.
-  /// </summary>
-  public static async IAsyncEnumerable<JsonPathMatch> ExtractAllMatchesWithPathsAsync(Stream stream, List<JsonPathSegment> segments, StreamHead head, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken = default)
+  private static RootContainerKind DetectRoot(ReadOnlySpan<byte> bytes)
   {
-    var origin = stream.CanSeek ? stream.Position : -1;
-    try
+    var start = bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF ? 3 : 0;
+    for (var i = start; i < bytes.Length; i++)
     {
-      using var effectiveStream = head.HeadBytes is { Length: > 0 }
-        ? CreateHeadPrependedStream(head.HeadBytes, stream)
-        : null;
-
-      var targetStream = effectiveStream ?? stream;
-
-      if (head.RootKind == RootContainerKind.Array)
-      {
-        await foreach (var match in ExtractAllArrayRootMatchesWithPathsAsync(targetStream, segments, cancellationToken))
-          yield return match;
-      }
-      else if (head.RootKind == RootContainerKind.Object)
-      {
-        await foreach (var match in ExtractAllObjectRootMatchesWithPathsAsync(targetStream, segments, cancellationToken))
-          yield return match;
-      }
-    }
-    finally
-    {
-      if (origin >= 0)
-        stream.Position = origin;
-    }
-  }
-
-  /// <summary>
-  /// Creates a stream that yields <paramref name="headBytes"/> first, then the remainder of <paramref name="innerStream"/>.
-  /// </summary>
-  private static Stream CreateHeadPrependedStream(byte[] headBytes, Stream innerStream)
-  {
-    var combined = new MemoryStream(headBytes.Length + (innerStream.CanSeek ? (int)(innerStream.Length - innerStream.Position) : 0));
-    combined.Write(headBytes, 0, headBytes.Length);
-    innerStream.CopyTo(combined);
-    combined.Position = 0;
-    return combined;
-  }
-
-  private static async Task<JsonNode?> ExtractFirstArrayRootMatchAsync(Stream stream, List<JsonPathSegment> segments, CancellationToken cancellationToken)
-  {
-    var firstSegment = segments[0];
-    const int remainingSegmentStartIndex = 1;
-
-    if (CanUseElementArrayStreaming(segments, remainingSegmentStartIndex))
-    {
-      var bytes = await ReadToEndAsync(stream, cancellationToken);
-      return ExtractFirstArrayRootElementMatch(bytes, firstSegment, segments, remainingSegmentStartIndex);
-    }
-
-    var index = 0;
-
-    await foreach (var item in JsonSerializer.DeserializeAsyncEnumerable<JsonNode>(stream, options: (JsonSerializerOptions?)null, cancellationToken: cancellationToken))
-    {
-      if (!IsArrayFirstSegmentMatch(firstSegment, index, item))
-      {
-        index++;
+      if (bytes[i] is 0x20 or 0x09 or 0x0A or 0x0D)
         continue;
-      }
-
-      var match = JsonPathExtractionCore.FindFirstMatch(item, segments, remainingSegmentStartIndex);
-      if (match is not null)
-        return match;
-
-      index++;
-    }
-
-    return null;
-  }
-
-  private static async IAsyncEnumerable<JsonNode?> ExtractAllArrayRootMatchesAsync(Stream stream, List<JsonPathSegment> segments, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
-  {
-    var firstSegment = segments[0];
-    const int remainingSegmentStartIndex = 1;
-
-    if (CanUseElementArrayStreaming(segments, remainingSegmentStartIndex))
-    {
-      var bytes = await ReadToEndAsync(stream, cancellationToken);
-      foreach (var match in CollectAllArrayRootElementMatches(bytes, firstSegment, segments, remainingSegmentStartIndex))
-        yield return match;
-
-      yield break;
-    }
-
-    var index = 0;
-
-    await foreach (var item in JsonSerializer.DeserializeAsyncEnumerable<JsonNode>(stream, options: (JsonSerializerOptions?)null, cancellationToken: cancellationToken))
-    {
-      if (IsArrayFirstSegmentMatch(firstSegment, index, item))
+      return bytes[i] switch
       {
-        foreach (var match in JsonPathExtractionCore.FindAllMatches(item, segments, remainingSegmentStartIndex))
-          yield return match;
-      }
-
-      index++;
-    }
-  }
-
-  private static async IAsyncEnumerable<JsonPathMatch> ExtractAllArrayRootMatchesWithPathsAsync(Stream stream, List<JsonPathSegment> segments, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
-  {
-    var firstSegment = segments[0];
-    const int remainingSegmentStartIndex = 1;
-
-    if (CanUseElementArrayStreaming(segments, remainingSegmentStartIndex))
-    {
-      var bytes = await ReadToEndAsync(stream, cancellationToken);
-      foreach (var match in CollectAllArrayRootElementMatchesWithPaths(bytes, firstSegment, segments, remainingSegmentStartIndex))
-        yield return match;
-
-      yield break;
-    }
-
-    var index = 0;
-
-    await foreach (var item in JsonSerializer.DeserializeAsyncEnumerable<JsonNode>(stream, options: (JsonSerializerOptions?)null, cancellationToken: cancellationToken))
-    {
-      if (IsArrayFirstSegmentMatch(firstSegment, index, item))
-      {
-        var itemRootPath = $"$[{index}]";
-        foreach (var match in JsonPathExtractionCore.FindAllMatchesWithPaths(item, segments, remainingSegmentStartIndex, itemRootPath))
-          yield return match;
-      }
-
-      index++;
-    }
-  }
-
-  private static JsonNode? ExtractFirstArrayRootElementMatch(
-    byte[] bytes,
-    JsonPathSegment firstSegment,
-    List<JsonPathSegment> segments,
-    int segmentStartIndex)
-  {
-    var reader = new Utf8JsonReader(bytes, isFinalBlock: true, state: default);
-    if (!reader.Read() || reader.TokenType != JsonTokenType.StartArray)
-      return null;
-
-    var index = 0;
-
-    while (reader.Read())
-    {
-      if (reader.TokenType == JsonTokenType.EndArray)
-        return null;
-
-      if (!IsArrayFirstSegmentElementMatch(firstSegment, index))
-      {
-        SkipCurrentValue(ref reader);
-        index++;
-        continue;
-      }
-
-      using var itemDocument = JsonDocument.ParseValue(ref reader);
-      var item = itemDocument.RootElement;
-
-      if (segmentStartIndex >= segments.Count)
-        return MaterializeElement(item);
-
-      TryFindElementMatches(item, segments, segmentStartIndex, out var elementMatches);
-      if (elementMatches.Count > 0)
-        return MaterializeElement(elementMatches[0]);
-
-      index++;
-    }
-
-    return null;
-  }
-
-  private static List<JsonNode?> CollectAllArrayRootElementMatches(
-    byte[] bytes,
-    JsonPathSegment firstSegment,
-    List<JsonPathSegment> segments,
-    int segmentStartIndex)
-  {
-    var results = new List<JsonNode?>();
-    var reader = new Utf8JsonReader(bytes, isFinalBlock: true, state: default);
-    if (!reader.Read() || reader.TokenType != JsonTokenType.StartArray)
-      return results;
-
-    var index = 0;
-
-    while (reader.Read())
-    {
-      if (reader.TokenType == JsonTokenType.EndArray)
-        return results;
-
-      if (!IsArrayFirstSegmentElementMatch(firstSegment, index))
-      {
-        SkipCurrentValue(ref reader);
-        index++;
-        continue;
-      }
-
-      using var itemDocument = JsonDocument.ParseValue(ref reader);
-      var item = itemDocument.RootElement;
-
-      if (segmentStartIndex >= segments.Count)
-      {
-        results.Add(MaterializeElement(item));
-        index++;
-        continue;
-      }
-
-      TryFindElementMatches(item, segments, segmentStartIndex, out var elementMatches);
-      foreach (var elementMatch in elementMatches)
-        results.Add(MaterializeElement(elementMatch));
-
-      index++;
-    }
-
-    return results;
-  }
-
-  private static List<JsonPathMatch> CollectAllArrayRootElementMatchesWithPaths(
-    byte[] bytes,
-    JsonPathSegment firstSegment,
-    List<JsonPathSegment> segments,
-    int segmentStartIndex)
-  {
-    var results = new List<JsonPathMatch>();
-    var reader = new Utf8JsonReader(bytes, isFinalBlock: true, state: default);
-    if (!reader.Read() || reader.TokenType != JsonTokenType.StartArray)
-      return results;
-
-    var index = 0;
-
-    while (reader.Read())
-    {
-      if (reader.TokenType == JsonTokenType.EndArray)
-        return results;
-
-      if (!IsArrayFirstSegmentElementMatch(firstSegment, index))
-      {
-        SkipCurrentValue(ref reader);
-        index++;
-        continue;
-      }
-
-      var itemRootPath = $"$[{index}]";
-      using var itemDocument = JsonDocument.ParseValue(ref reader);
-      var item = itemDocument.RootElement;
-
-      if (segmentStartIndex >= segments.Count)
-      {
-        results.Add(new JsonPathMatch(itemRootPath, MaterializeElement(item)));
-        index++;
-        continue;
-      }
-
-      TryFindElementMatchesWithPaths(item, segments, segmentStartIndex, itemRootPath, out var elementMatches);
-      foreach (var elementMatch in elementMatches)
-        results.Add(new JsonPathMatch(elementMatch.Path, MaterializeElement(elementMatch.Element)));
-
-      index++;
-    }
-
-    return results;
-  }
-
-  private static async Task<JsonNode?> ExtractFirstObjectRootMatchAsync(Stream stream, List<JsonPathSegment> segments, CancellationToken cancellationToken)
-  {
-    var bytes = await ReadToEndAsync(stream, cancellationToken);
-    return ExtractFirstObjectRootMatch(bytes, segments);
-  }
-
-  private static async IAsyncEnumerable<JsonNode?> ExtractAllObjectRootMatchesAsync(Stream stream, List<JsonPathSegment> segments, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
-  {
-    var bytes = await ReadToEndAsync(stream, cancellationToken);
-    foreach (var match in CollectAllObjectRootMatches(bytes, segments))
-      yield return match;
-  }
-
-  private static async IAsyncEnumerable<JsonPathMatch> ExtractAllObjectRootMatchesWithPathsAsync(Stream stream, List<JsonPathSegment> segments, [System.Runtime.CompilerServices.EnumeratorCancellation] CancellationToken cancellationToken)
-  {
-    var bytes = await ReadToEndAsync(stream, cancellationToken);
-    foreach (var match in CollectAllObjectRootMatchesWithPaths(bytes, segments))
-      yield return match;
-  }
-
-  private static JsonNode? ExtractFirstObjectRootMatch(byte[] bytes, List<JsonPathSegment> segments)
-  {
-    var firstSegment = segments[0];
-    const int remainingSegmentStartIndex = 1;
-
-    var reader = new Utf8JsonReader(bytes, isFinalBlock: true, state: default);
-    if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
-      return null;
-
-    while (reader.Read())
-    {
-      if (reader.TokenType == JsonTokenType.EndObject)
-        return null;
-
-      if (reader.TokenType != JsonTokenType.PropertyName)
-        continue;
-
-      var propertyName = reader.GetString() ?? string.Empty;
-      if (!reader.Read())
-        return null;
-
-      if (!IsObjectFirstSegmentMatch(firstSegment, propertyName))
-      {
-        reader.Skip();
-        continue;
-      }
-
-      using var propertyDocument = JsonDocument.ParseValue(ref reader);
-      if (TryFindElementMatches(propertyDocument.RootElement, segments, remainingSegmentStartIndex, out var elementMatches))
-      {
-        if (elementMatches.Count > 0)
-          return MaterializeElement(elementMatches[0]);
-
-        continue;
-      }
-
-      var propertyNode = JsonNode.Parse(propertyDocument.RootElement.GetRawText());
-      var match = JsonPathExtractionCore.FindFirstMatch(propertyNode, segments, remainingSegmentStartIndex);
-      if (match is not null)
-        return match;
-    }
-
-    return null;
-  }
-
-  private static List<JsonNode?> CollectAllObjectRootMatches(byte[] bytes, List<JsonPathSegment> segments)
-  {
-    var firstSegment = segments[0];
-    const int remainingSegmentStartIndex = 1;
-    var results = new List<JsonNode?>();
-
-    var reader = new Utf8JsonReader(bytes, isFinalBlock: true, state: default);
-    if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
-      return results;
-
-    while (reader.Read())
-    {
-      if (reader.TokenType == JsonTokenType.EndObject)
-        return results;
-
-      if (reader.TokenType != JsonTokenType.PropertyName)
-        continue;
-
-      var propertyName = reader.GetString() ?? string.Empty;
-      if (!reader.Read())
-        return results;
-
-      if (!IsObjectFirstSegmentMatch(firstSegment, propertyName))
-      {
-        reader.Skip();
-        continue;
-      }
-
-      using var propertyDocument = JsonDocument.ParseValue(ref reader);
-      if (TryFindElementMatches(propertyDocument.RootElement, segments, remainingSegmentStartIndex, out var elementMatches))
-      {
-        foreach (var elementMatch in elementMatches)
-          results.Add(MaterializeElement(elementMatch));
-
-        continue;
-      }
-
-      var propertyNode = JsonNode.Parse(propertyDocument.RootElement.GetRawText());
-      foreach (var match in JsonPathExtractionCore.FindAllMatches(propertyNode, segments, remainingSegmentStartIndex))
-        results.Add(match);
-    }
-
-    return results;
-  }
-
-  private static List<JsonPathMatch> CollectAllObjectRootMatchesWithPaths(byte[] bytes, List<JsonPathSegment> segments)
-  {
-    var firstSegment = segments[0];
-    const int remainingSegmentStartIndex = 1;
-    var results = new List<JsonPathMatch>();
-
-    var reader = new Utf8JsonReader(bytes, isFinalBlock: true, state: default);
-    if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject)
-      return results;
-
-    while (reader.Read())
-    {
-      if (reader.TokenType == JsonTokenType.EndObject)
-        return results;
-
-      if (reader.TokenType != JsonTokenType.PropertyName)
-        continue;
-
-      var propertyName = reader.GetString() ?? string.Empty;
-      if (!reader.Read())
-        return results;
-
-      if (!IsObjectFirstSegmentMatch(firstSegment, propertyName))
-      {
-        reader.Skip();
-        continue;
-      }
-
-      var propertyPath = AppendPropertyPath("$", propertyName);
-      using var propertyDocument = JsonDocument.ParseValue(ref reader);
-      if (TryFindElementMatchesWithPaths(propertyDocument.RootElement, segments, remainingSegmentStartIndex, propertyPath, out var elementMatches))
-      {
-        foreach (var elementMatch in elementMatches)
-          results.Add(new JsonPathMatch(elementMatch.Path, MaterializeElement(elementMatch.Element)));
-
-        continue;
-      }
-
-      var propertyNode = JsonNode.Parse(propertyDocument.RootElement.GetRawText());
-      foreach (var match in JsonPathExtractionCore.FindAllMatchesWithPaths(propertyNode, segments, remainingSegmentStartIndex, propertyPath))
-        results.Add(match);
-    }
-
-    return results;
-  }
-
-  private static bool IsArrayFirstSegmentMatch(JsonPathSegment first, int index, JsonNode? item)
-  {
-    return first.SegmentType switch
-    {
-      JsonPathSegmentType.Wildcard => true,
-      JsonPathSegmentType.ArrayIndex => index == first.ArrayIndex,
-      JsonPathSegmentType.ArrayRange => index >= first.ArrayIndex
-        && (first.ArrayRangeEnd == int.MaxValue || index < first.ArrayRangeEnd),
-      JsonPathSegmentType.ArrayUnion => first.ArrayUnionIndices is not null && Array.IndexOf(first.ArrayUnionIndices, index) >= 0,
-      JsonPathSegmentType.Filter => (first.FilterNode ?? JsonPathFilterNode.Compile(first.FilterExpression!)).Evaluate(item),
-      _ => false
-    };
-  }
-
-  private static bool IsArrayFirstSegmentElementMatch(JsonPathSegment first, int index)
-  {
-    return first.SegmentType switch
-    {
-      JsonPathSegmentType.Wildcard => true,
-      JsonPathSegmentType.ArrayIndex => index == first.ArrayIndex,
-      JsonPathSegmentType.ArrayRange => index >= first.ArrayIndex
-        && (first.ArrayRangeEnd == int.MaxValue || index < first.ArrayRangeEnd),
-      JsonPathSegmentType.ArrayUnion => first.ArrayUnionIndices is not null && Array.IndexOf(first.ArrayUnionIndices, index) >= 0,
-      _ => false
-    };
-  }
-
-  private static bool CanUseElementArrayStreaming(
-    List<JsonPathSegment> segments,
-    int segmentStartIndex)
-  {
-    var firstSegment = segments[0];
-    if (firstSegment.SegmentType == JsonPathSegmentType.Filter)
-      return false;
-
-    for (var segmentIndex = segmentStartIndex; segmentIndex < segments.Count; segmentIndex++)
-    {
-      var segment = segments[segmentIndex];
-      switch (segment.SegmentType)
-      {
-        case JsonPathSegmentType.Property:
-        case JsonPathSegmentType.ArrayIndex:
-        case JsonPathSegmentType.ArrayRange:
-        case JsonPathSegmentType.Wildcard:
-          continue;
-
-        default:
-          return false;
-      }
-    }
-
-    return true;
-  }
-
-  private static bool IsObjectFirstSegmentMatch(JsonPathSegment first, string propertyName)
-  {
-    return first.SegmentType switch
-    {
-      JsonPathSegmentType.Property => string.Equals(first.PropertyName, propertyName, StringComparison.Ordinal),
-      JsonPathSegmentType.Wildcard => true,
-      JsonPathSegmentType.PropertyUnion => first.PropertyUnionNames is not null
-        && Array.IndexOf(first.PropertyUnionNames, propertyName) >= 0,
-      _ => false
-    };
-  }
-
-  private static bool TryFindElementMatches(
-    JsonElement root,
-    List<JsonPathSegment> segments,
-    int startIndex,
-    out List<JsonElement> matches)
-  {
-    var current = new List<JsonElement> { root };
-
-    for (var segmentIndex = startIndex; segmentIndex < segments.Count; segmentIndex++)
-    {
-      var segment = segments[segmentIndex];
-      var next = new List<JsonElement>();
-
-      foreach (var element in current)
-      {
-        if (!TryCollectElementMatches(element, segment, next))
-        {
-          matches = new List<JsonElement>();
-          return false;
-        }
-      }
-
-      current = next;
-      if (current.Count == 0)
-        break;
-    }
-
-    matches = current;
-    return true;
-  }
-
-  private static bool TryFindElementMatchesWithPaths(
-    JsonElement root,
-    List<JsonPathSegment> segments,
-    int startIndex,
-    string rootPath,
-    out List<ElementPathMatch> matches)
-  {
-    var current = new List<ElementPathMatch> { new(root, rootPath) };
-
-    for (var segmentIndex = startIndex; segmentIndex < segments.Count; segmentIndex++)
-    {
-      var segment = segments[segmentIndex];
-      var next = new List<ElementPathMatch>();
-
-      foreach (var currentMatch in current)
-      {
-        if (!TryCollectElementMatchesWithPaths(currentMatch, segment, next))
-        {
-          matches = new List<ElementPathMatch>();
-          return false;
-        }
-      }
-
-      current = next;
-      if (current.Count == 0)
-        break;
-    }
-
-    matches = current;
-    return true;
-  }
-
-  private static bool TryCollectElementMatches(
-    JsonElement element,
-    JsonPathSegment segment,
-    List<JsonElement> results)
-  {
-    switch (segment.SegmentType)
-    {
-      case JsonPathSegmentType.Property:
-        if (element.ValueKind == JsonValueKind.Object &&
-            element.TryGetProperty(segment.PropertyName!, out var propertyValue))
-        {
-          results.Add(propertyValue);
-        }
-
-        return true;
-
-      case JsonPathSegmentType.ArrayIndex:
-        if (TryGetArrayElement(element, segment.ArrayIndex, out var arrayElement))
-          results.Add(arrayElement);
-
-        return true;
-
-      case JsonPathSegmentType.ArrayRange:
-        CollectArrayRangeElements(element, segment.ArrayIndex, segment.ArrayRangeEnd, results);
-        return true;
-
-      case JsonPathSegmentType.Wildcard:
-        CollectWildcardElements(element, results);
-        return true;
-
-      default:
-        return false;
-    }
-  }
-
-  private static bool TryCollectElementMatchesWithPaths(
-    ElementPathMatch currentMatch,
-    JsonPathSegment segment,
-    List<ElementPathMatch> results)
-  {
-    switch (segment.SegmentType)
-    {
-      case JsonPathSegmentType.Property:
-        if (currentMatch.Element.ValueKind == JsonValueKind.Object &&
-            currentMatch.Element.TryGetProperty(segment.PropertyName!, out var propertyValue))
-        {
-          results.Add(new ElementPathMatch(
-            propertyValue,
-            AppendPropertyPath(currentMatch.Path, segment.PropertyName!)));
-        }
-
-        return true;
-
-      case JsonPathSegmentType.ArrayIndex:
-        if (TryGetArrayElement(currentMatch.Element, segment.ArrayIndex, out var arrayElement, out var effectiveIndex))
-        {
-          results.Add(new ElementPathMatch(
-            arrayElement,
-            AppendArrayIndexPath(currentMatch.Path, effectiveIndex)));
-        }
-
-        return true;
-
-      case JsonPathSegmentType.ArrayRange:
-        CollectArrayRangeElementsWithPaths(currentMatch, segment.ArrayIndex, segment.ArrayRangeEnd, results);
-        return true;
-
-      case JsonPathSegmentType.Wildcard:
-        CollectWildcardElementsWithPaths(currentMatch, results);
-        return true;
-
-      default:
-        return false;
-    }
-  }
-
-  private static bool TryGetArrayElement(JsonElement element, int index, out JsonElement match)
-  {
-    return TryGetArrayElement(element, index, out match, out _);
-  }
-
-  private static bool TryGetArrayElement(JsonElement element, int index, out JsonElement match, out int effectiveIndex)
-  {
-    match = default;
-    effectiveIndex = -1;
-
-    if (element.ValueKind != JsonValueKind.Array)
-      return false;
-
-    var length = element.GetArrayLength();
-    effectiveIndex = index < 0 ? length + index : index;
-    if (effectiveIndex < 0 || effectiveIndex >= length)
-      return false;
-
-    var currentIndex = 0;
-    foreach (var item in element.EnumerateArray())
-    {
-      if (currentIndex == effectiveIndex)
-      {
-        match = item;
-        return true;
-      }
-
-      currentIndex++;
-    }
-
-    return false;
-  }
-
-  private static void CollectArrayRangeElements(
-    JsonElement element,
-    int start,
-    int endExclusive,
-    List<JsonElement> results)
-  {
-    if (element.ValueKind != JsonValueKind.Array)
-      return;
-
-    var length = element.GetArrayLength();
-    var effectiveStart = start < 0 ? length + start : start;
-    var effectiveEnd = endExclusive == int.MaxValue
-      ? length
-      : (endExclusive < 0 ? length + endExclusive : endExclusive);
-
-    effectiveStart = Math.Clamp(effectiveStart, 0, length);
-    effectiveEnd = Math.Clamp(effectiveEnd, 0, length);
-    if (effectiveEnd < effectiveStart)
-      return;
-
-    var currentIndex = 0;
-    foreach (var item in element.EnumerateArray())
-    {
-      if (currentIndex >= effectiveEnd)
-        break;
-
-      if (currentIndex >= effectiveStart)
-        results.Add(item);
-
-      currentIndex++;
-    }
-  }
-
-  private static void CollectArrayRangeElementsWithPaths(
-    ElementPathMatch currentMatch,
-    int start,
-    int endExclusive,
-    List<ElementPathMatch> results)
-  {
-    var element = currentMatch.Element;
-    if (element.ValueKind != JsonValueKind.Array)
-      return;
-
-    var length = element.GetArrayLength();
-    var effectiveStart = start < 0 ? length + start : start;
-    var effectiveEnd = endExclusive == int.MaxValue
-      ? length
-      : (endExclusive < 0 ? length + endExclusive : endExclusive);
-
-    effectiveStart = Math.Clamp(effectiveStart, 0, length);
-    effectiveEnd = Math.Clamp(effectiveEnd, 0, length);
-    if (effectiveEnd < effectiveStart)
-      return;
-
-    var currentIndex = 0;
-    foreach (var item in element.EnumerateArray())
-    {
-      if (currentIndex >= effectiveEnd)
-        break;
-
-      if (currentIndex >= effectiveStart)
-      {
-        results.Add(new ElementPathMatch(
-          item,
-          AppendArrayIndexPath(currentMatch.Path, currentIndex)));
-      }
-
-      currentIndex++;
-    }
-  }
-
-  private static void CollectWildcardElements(JsonElement element, List<JsonElement> results)
-  {
-    if (element.ValueKind == JsonValueKind.Array)
-    {
-      foreach (var item in element.EnumerateArray())
-        results.Add(item);
-
-      return;
-    }
-
-    if (element.ValueKind != JsonValueKind.Object)
-      return;
-
-    foreach (var property in element.EnumerateObject())
-      results.Add(property.Value);
-  }
-
-  private static void CollectWildcardElementsWithPaths(
-    ElementPathMatch currentMatch,
-    List<ElementPathMatch> results)
-  {
-    if (currentMatch.Element.ValueKind == JsonValueKind.Array)
-    {
-      var index = 0;
-      foreach (var item in currentMatch.Element.EnumerateArray())
-      {
-        results.Add(new ElementPathMatch(item, AppendArrayIndexPath(currentMatch.Path, index)));
-        index++;
-      }
-
-      return;
-    }
-
-    if (currentMatch.Element.ValueKind != JsonValueKind.Object)
-      return;
-
-    foreach (var property in currentMatch.Element.EnumerateObject())
-    {
-      results.Add(new ElementPathMatch(
-        property.Value,
-        AppendPropertyPath(currentMatch.Path, property.Name)));
-    }
-  }
-
-  private static JsonNode? MaterializeElement(JsonElement element)
-  {
-    return element.ValueKind switch
-    {
-      JsonValueKind.Null => null,
-      JsonValueKind.Undefined => null,
-      JsonValueKind.String => JsonValue.Create(element.GetString()),
-      JsonValueKind.True => JsonValue.Create(true),
-      JsonValueKind.False => JsonValue.Create(false),
-      _ => JsonNode.Parse(element.GetRawText())
-    };
-  }
-
-  private static void SkipCurrentValue(ref Utf8JsonReader reader)
-  {
-    if (reader.TokenType is JsonTokenType.StartArray or JsonTokenType.StartObject)
-      reader.Skip();
-  }
-
-  private static Task<byte[]> ReadToEndAsync(Stream stream)
-  {
-    return ReadToEndAsync(stream, CancellationToken.None);
-  }
-
-  private static async Task<byte[]> ReadToEndAsync(Stream stream, CancellationToken cancellationToken)
-  {
-    return await ReadToEndAsync(stream, head: null, cancellationToken).ConfigureAwait(false);
-  }
-
-  private static async Task<byte[]> ReadToEndAsync(Stream stream, byte[]? head, CancellationToken cancellationToken = default)
-  {
-    // Determine the data length first (seekable streams) or use a pooled buffer for copy.
-    byte[]? rented = null;
-    var dataLength = 0;
-
-    try
-    {
-      if (stream.CanSeek)
-      {
-        var remainingLength = stream.Length - stream.Position;
-        if (remainingLength <= 0)
-          return head ?? Array.Empty<byte>();
-
-        if (remainingLength <= int.MaxValue)
-        {
-          var length = (int)remainingLength;
-          rented = ArrayPool<byte>.Shared.Rent(length);
-          dataLength = 0;
-
-          while (dataLength < length)
-          {
-            var bytesRead = await stream.ReadAsync(rented.AsMemory(dataLength, length - dataLength), cancellationToken);
-            if (bytesRead == 0)
-              break;
-
-            dataLength += bytesRead;
-          }
-        }
-      }
-
-      if (rented is null)
-      {
-        // Non-seekable stream — use pooled buffer for copy
-        rented = ArrayPool<byte>.Shared.Rent(81920); // 80 KB default
-        using var copy = new MemoryStream();
-        await stream.CopyToAsync(copy, cancellationToken);
-        dataLength = (int)copy.Length;
-
-        if (dataLength > rented.Length)
-        {
-          ArrayPool<byte>.Shared.Return(rented);
-          rented = ArrayPool<byte>.Shared.Rent(dataLength);
-        }
-
-        copy.Position = 0;
-        await copy.ReadAsync(rented.AsMemory(0, dataLength), cancellationToken);
-      }
-    }
-    catch
-    {
-      if (rented is not null)
-        ArrayPool<byte>.Shared.Return(rented);
-
-      throw;
-    }
-
-    // Build the result (may need head bytes prepended)
-    byte[] result;
-
-    if (head is null || head.Length == 0)
-    {
-      if (dataLength == rented!.Length)
-      {
-        // Exact fit — return the rented array directly (caller owns it, pool benefit lost here)
-        result = rented;
-        rented = null;
-      }
-      else
-      {
-        result = new byte[dataLength];
-        Array.Copy(rented!, 0, result, 0, dataLength);
-      }
-    }
-    else
-    {
-      result = new byte[head.Length + dataLength];
-      Array.Copy(head, 0, result, 0, head.Length);
-      Array.Copy(rented!, 0, result, head.Length, dataLength);
-    }
-
-    if (rented is not null)
-      ArrayPool<byte>.Shared.Return(rented);
-
-    return result;
-  }
-
-  /// <summary>
-  /// Peeks the stream to determine the root container kind and captures any bytes consumed.
-  /// For seekable streams, restores position and returns an empty head-bytes array.
-  /// For non-seekable streams, returns the consumed bytes so the caller can prepend them.
-  /// </summary>
-  private static StreamHead PeekStreamHead(Stream stream)
-  {
-    const int maxPeekBytes = 64;
-
-    if (stream.CanSeek)
-    {
-      var origin = stream.Position;
-      try
-      {
-        var kind = PeekRootKindFromStream(stream, maxPeekBytes);
-        return new StreamHead { RootKind = kind, HeadBytes = null };
-      }
-      finally
-      {
-        stream.Position = origin;
-      }
-    }
-
-    // Non-seekable: consume bytes and return them as head
-    var headBuffer = new byte[maxPeekBytes];
-    var totalRead = 0;
-    var bytesRead = stream.Read(headBuffer, 0, maxPeekBytes);
-    if (bytesRead == 0)
-      return new StreamHead { RootKind = RootContainerKind.None, HeadBytes = Array.Empty<byte>() };
-
-    totalRead = bytesRead;
-
-    var detectedKind = PeekRootKindFromBytes(headBuffer.AsSpan(0, totalRead));
-    if (totalRead == headBuffer.Length)
-      return new StreamHead { RootKind = detectedKind, HeadBytes = headBuffer };
-
-    // Trim to actual read size
-    var trimmed = new byte[totalRead];
-    Array.Copy(headBuffer, trimmed, totalRead);
-    return new StreamHead { RootKind = detectedKind, HeadBytes = trimmed };
-  }
-
-  private static RootContainerKind PeekRootKindFromStream(Stream stream, int maxBytes)
-  {
-    Span<byte> buffer = stackalloc byte[maxBytes];
-    var bytesRead = stream.Read(buffer);
-    if (bytesRead == 0)
-      return RootContainerKind.None;
-
-    return PeekRootKindFromBytes(buffer[..bytesRead]);
-  }
-
-  private static RootContainerKind PeekRootKindFromBytes(ReadOnlySpan<byte> bytes)
-  {
-    for (var i = 0; i < bytes.Length; i++)
-    {
-      var b = bytes[i];
-
-      // Skip UTF-8 BOM
-      if (i == 0 && b == 0xEF && bytes.Length > 2 && bytes[1] == 0xBB && bytes[2] == 0xBF)
-      {
-        i += 2;
-        continue;
-      }
-
-      // Skip whitespace (space, tab, newline, carriage return)
-      if (b is 0x20 or 0x09 or 0x0A or 0x0D)
-        continue;
-
-      return b switch
-      {
-        0x5B => RootContainerKind.Array,  // '['
-        0x7B => RootContainerKind.Object, // '{'
+        0x5B => RootContainerKind.Array,
+        0x7B => RootContainerKind.Object,
         _ => RootContainerKind.None
       };
     }
-
     return RootContainerKind.None;
-  }
-
-  private static string AppendPropertyPath(string parentPath, string propertyName)
-  {
-    if (IsSimpleIdentifier(propertyName))
-      return $"{parentPath}.{propertyName}";
-
-    var escapedProperty = propertyName
-      .Replace("\\", "\\\\", StringComparison.Ordinal)
-      .Replace("'", "\\'", StringComparison.Ordinal);
-    return $"{parentPath}['{escapedProperty}']";
-  }
-
-  private static string AppendArrayIndexPath(string parentPath, int index)
-    => $"{parentPath}[{index}]";
-
-  private static bool IsSimpleIdentifier(string propertyName)
-  {
-    if (string.IsNullOrEmpty(propertyName))
-      return false;
-
-    if (!(char.IsLetter(propertyName[0]) || propertyName[0] == '_'))
-      return false;
-
-    for (var i = 1; i < propertyName.Length; i++)
-    {
-      var ch = propertyName[i];
-      if (!(char.IsLetterOrDigit(ch) || ch == '_'))
-        return false;
-    }
-
-    return true;
   }
 }

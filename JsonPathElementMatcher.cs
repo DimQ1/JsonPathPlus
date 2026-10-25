@@ -9,7 +9,7 @@ internal readonly record struct JsonPathValueMatch(string Path, JsonNode? Value)
 
 internal static class JsonPathElementMatcher
 {
-  private readonly record struct ElementMatch(JsonElement Element, string Path);
+  private readonly record struct ElementMatch(JsonElement Element, JsonPathLocation? Path);
 
   public static JsonNode? Materialize(JsonElement element)
     => element.ValueKind switch
@@ -20,7 +20,7 @@ internal static class JsonPathElementMatcher
     };
 
   public static IEnumerable<JsonPathValueMatch> FindMatches(
-    JsonElement element, List<JsonPathSegment> segments, int startIndex, string? path)
+    JsonElement element, List<JsonPathSegment> segments, int startIndex, JsonPathLocation? path)
   {
     while (startIndex < segments.Count && segments[startIndex].SegmentType == JsonPathSegmentType.Property)
     {
@@ -33,7 +33,7 @@ internal static class JsonPathElementMatcher
 
     if (startIndex >= segments.Count)
     {
-      yield return new JsonPathValueMatch(path ?? "$", Materialize(element));
+      yield return new JsonPathValueMatch(path?.ToString() ?? "$", Materialize(element));
       yield break;
     }
 
@@ -48,7 +48,7 @@ internal static class JsonPathElementMatcher
       }
       else
       {
-        foreach (var match in JsonPathExtractionCore.FindAllMatchesWithPaths(node, segments, startIndex, path))
+        foreach (var match in JsonPathExtractionCore.FindAllMatchesWithPaths(node, segments, startIndex, path.ToString()))
           yield return new JsonPathValueMatch(match.Path, match.Value);
       }
       yield break;
@@ -67,7 +67,7 @@ internal static class JsonPathElementMatcher
       or JsonPathSegmentType.PropertyUnion or JsonPathSegmentType.ComputedIndex
       or JsonPathSegmentType.Wildcard or JsonPathSegmentType.Filter;
 
-  private static IEnumerable<ElementMatch> Select(JsonElement element, JsonPathSegment segment, string? path)
+  private static IEnumerable<ElementMatch> Select(JsonElement element, JsonPathSegment segment, JsonPathLocation? path)
   {
     if (segment.SegmentType == JsonPathSegmentType.Property)
     {
@@ -157,9 +157,9 @@ internal static class JsonPathElementMatcher
     }
   }
 
-  internal static string PropertyPath(string? path, string name)
-    => path is null ? "$" : JsonPathMatcher.AppendPropertyPath(path, name);
+  internal static JsonPathLocation? PropertyPath(JsonPathLocation? path, string name)
+    => path is null ? null : new JsonPathLocation(path, name);
 
-  internal static string ArrayPath(string? path, int index)
-    => path is null ? "$" : $"{path}[{index}]";
+  internal static JsonPathLocation? ArrayPath(JsonPathLocation? path, int index)
+    => path is null ? null : new JsonPathLocation(path, index);
 }

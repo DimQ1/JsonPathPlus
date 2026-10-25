@@ -348,16 +348,9 @@ internal static class JsonPathMatcher
     => new(value, parent.Path is null ? null : $"{parent.Path}[{index}]");
 
   internal static string AppendPropertyPath(string parentPath, string propertyName)
-  {
-    if (IsSimpleIdentifier(propertyName))
-      return $"{parentPath}.{propertyName}";
+    => JsonPathLocation.AppendProperty(parentPath, propertyName);
 
-    var escaped = propertyName.Replace("\\", "\\\\", StringComparison.Ordinal)
-      .Replace("'", "\\'", StringComparison.Ordinal);
-    return $"{parentPath}['{escaped}']";
-  }
-
-  private static bool IsSimpleIdentifier(string name)
+  internal static bool IsSimpleIdentifier(string name)
   {
     if (name.Length == 0 || !(char.IsLetter(name[0]) || name[0] == '_'))
       return false;

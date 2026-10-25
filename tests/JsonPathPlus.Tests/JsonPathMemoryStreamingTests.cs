@@ -8,6 +8,16 @@ namespace JsonPathPlus.Tests;
 public sealed class JsonPathMemoryStreamingTests
 {
   [Fact]
+  public void DeferredLocation_PreservesEscapingAndIndexFormatting()
+  {
+    var property = new JsonPathLocation(JsonPathLocation.Root, "a\\b'c");
+    Assert.Equal("$['a\\\\b\\'c']", property.ToString());
+    Assert.Equal("$['a\\\\b\\'c'][12345].name",
+      new JsonPathLocation(new JsonPathLocation(property, 12345), "name").ToString());
+    Assert.Equal("$[-2147483648]", new JsonPathLocation(JsonPathLocation.Root, int.MinValue).ToString());
+  }
+
+  [Fact]
   public async Task ExplicitMaxDepth_IsHonoredByStreamAndFallback()
   {
     var json = string.Concat(Enumerable.Repeat("{\"child\":", 80)) + "{\"id\":7}" + new string('}', 80);

@@ -11,7 +11,7 @@ namespace JsonPathPlus;
 internal static partial class JsonPathStreamingMatcher
 {
   private static IEnumerable<JsonPathValueMatch> MatchNode(
-    JsonNode? node, List<JsonPathSegment> segments, int index, string? path)
+    JsonNode? node, List<JsonPathSegment> segments, int index, JsonPathLocation? path)
   {
     if (path is null)
     {
@@ -20,13 +20,13 @@ internal static partial class JsonPathStreamingMatcher
     }
     else
     {
-      foreach (var match in JsonPathExtractionCore.FindAllMatchesWithPaths(node, segments, index, path))
+      foreach (var match in JsonPathExtractionCore.FindAllMatchesWithPaths(node, segments, index, path.ToString()))
         yield return new JsonPathValueMatch(match.Path, match.Value);
     }
   }
 
   private static async IAsyncEnumerable<JsonPathValueMatch> RecursiveAsync(
-    JsonPathStreamReader reader, List<JsonPathSegment> segments, int segmentIndex, string? path,
+    JsonPathStreamReader reader, List<JsonPathSegment> segments, int segmentIndex, JsonPathLocation? path,
     [EnumeratorCancellation] CancellationToken cancellationToken, bool childrenOnly = false)
   {
     var segment = segments[segmentIndex];
@@ -104,7 +104,7 @@ internal static partial class JsonPathStreamingMatcher
   }
 
   private static async IAsyncEnumerable<JsonPathValueMatch> ProjectAsync(
-    JsonPathStreamReader reader, List<JsonPathSegment> segments, int segmentIndex, string? path,
+    JsonPathStreamReader reader, List<JsonPathSegment> segments, int segmentIndex, JsonPathLocation? path,
     [EnumeratorCancellation] CancellationToken cancellationToken)
   {
     var segment = segments[segmentIndex];

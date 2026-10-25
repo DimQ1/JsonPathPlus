@@ -113,7 +113,7 @@ internal static partial class JsonPathStreamingMatcher
         {
             if (await reader.ReadAsync().ConfigureAwait(false))
             {
-                await foreach (var match in TraverseAsync(reader, segments, 0, withPaths ? "$" : null, cancellationToken))
+                await foreach (var match in TraverseAsync(reader, segments, 0, withPaths ? JsonPathLocation.Root : null, cancellationToken))
                     yield return match;
             }
         }
@@ -125,14 +125,14 @@ internal static partial class JsonPathStreamingMatcher
     }
 
     private static async IAsyncEnumerable<JsonPathValueMatch> TraverseAsync(
-      JsonPathStreamReader reader, List<JsonPathSegment> segments, int segmentIndex, string? path,
+      JsonPathStreamReader reader, List<JsonPathSegment> segments, int segmentIndex, JsonPathLocation? path,
       [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         cancellationToken.ThrowIfCancellationRequested();
         if (segmentIndex >= segments.Count)
         {
             using var document = await reader.ReadValueAsync().ConfigureAwait(false);
-            yield return new JsonPathValueMatch(path ?? "$", JsonPathElementMatcher.Materialize(document.RootElement));
+            yield return new JsonPathValueMatch(path?.ToString() ?? "$", JsonPathElementMatcher.Materialize(document.RootElement));
             yield break;
         }
 
@@ -345,7 +345,7 @@ internal static partial class JsonPathStreamingMatcher
     }
 
     private static async IAsyncEnumerable<JsonPathValueMatch> FilterAsync(
-        JsonPathStreamReader reader, JsonPathFilterNode filter, List<JsonPathSegment> segments, int nextIndex, string? path,
+        JsonPathStreamReader reader, JsonPathFilterNode filter, List<JsonPathSegment> segments, int nextIndex, JsonPathLocation? path,
         [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         if (reader.TryReadSmallDocument(out var document))
@@ -390,7 +390,7 @@ internal static partial class JsonPathStreamingMatcher
     }
 
     private static async IAsyncEnumerable<JsonPathValueMatch> ReplayAsync(
-      JsonPathValueBuffer value, List<JsonPathSegment> segments, int segmentIndex, string? path,
+      JsonPathValueBuffer value, List<JsonPathSegment> segments, int segmentIndex, JsonPathLocation? path,
       [EnumeratorCancellation] CancellationToken cancellationToken)
     {
         value.Rewind();

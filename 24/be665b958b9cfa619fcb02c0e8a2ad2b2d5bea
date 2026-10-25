@@ -1,0 +1,41 @@
+JsonPathStreamingMatcher.cs
+  s_dbbe2a01c8d326::t_5208d7d98cfc25 12,14,16,18-21,23,25-26,28-29,32-52,54-63,65,67-74,76-79,81-83,86-88,90-91,94-96,98-99,102-104,106-107,109-112,114-125,127-132,134-136,138-146,148-159,161-189,191,193-197,199-236,239-287,289-300,302,304-337,339-340,342,345-378,381-388,392-394,396-401,404,406-431,434,436-460,463,465-477
+JsonPathFilterDependencies.cs
+  s_dbbe2a01c8d326::t_1ff6c206f4c254 1-138
+JsonPathFilterNode.cs
+  s_dbbe2a01c8d326::t_9ea5a73c0db592 36,161-162,180-181,195-196,210-211,242-243,262,271-275,336-337
+JsonPathStreamReader.cs
+  s_dbbe2a01c8d326::t_ef3e3ac928f78a 10,12-40,43,46-49,51-62,66,68,70-72,75,77-81,87-88,90-91,94-131,133-152,154,157,159-162,166,173-177,182-200,203-219,221-252,254-275,280-281,283-286,289-290,293-297,300-304,306-307,311,313-315,317-320,323,325-328,330-335,337-347,353-355,357-358,360,362-364,366-368,372-392
+JsonPathStreamingOperations.cs
+  s_dbbe2a01c8d326::t_91864856cd2c4a 1-276
+JsonPathValueBuffer.cs
+  s_dbbe2a01c8d326::t_fa0a9f0a58b895 1-131
+tests/JsonPathPlus.Tests/JsonPathMemoryStreamingTests.cs
+  s_dbbe2a01c8d326::t_b3e6ea3941ba44 10-97,258
+tests/JsonPathPlus.Tests/JsonPathStreamingMatcherInternalTests.cs
+  s_dbbe2a01c8d326::t_3cfdd8c49611d3 37,42-44
+tests/JsonPathPlus.Tests/StreamJsonExtractionExtensionsTests.cs
+  s_dbbe2a01c8d326::t_0dc5bbe067171b 825
+JsonPathExtractionOptions.cs
+  s_dbbe2a01c8d326::t_9f87a49d0af0be 1-2,15-32
+README.md
+  s_dbbe2a01c8d326::t_580fb761671349 16-17,21-36
+StreamJsonExtractionExtensions.cs
+  s_dbbe2a01c8d326::t_055d37047f6659 52,59,64,95,103,111,143,151,159,164-178
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "24be665b958b9cfa619fcb02c0e8a2ad2b2d5bea",
+  "prompts": {},
+  "sessions": {
+    "s_dbbe2a01c8d326": {
+      "agent_id": {
+        "tool": "github-copilot-cli",
+        "id": "b19c53e8-0b3b-4990-ac31-b9fa330c4cfb",
+        "model": "unknown"
+      },
+      "human_author": "Dzmitry Shchamialiou <dzmitry.shchamialiou@ventionteams.com>"
+    }
+  }
+}

@@ -46,6 +46,7 @@ internal sealed class JsonPathStreamReader : IDisposable
   private ReadOnlySequence<byte> _tokenBytes;
   private long _tokenStart;
   private long? _captureStart;
+  private long? _captureLimit;
   private bool _disposed;
 
   public JsonPathStreamReader(Stream stream, CancellationToken cancellationToken, JsonPathExtractionOptions options = default)
@@ -208,7 +209,8 @@ internal sealed class JsonPathStreamReader : IDisposable
       new JsonDocumentOptions { MaxDepth = Options.MaxDepth }, _cancellationToken).ConfigureAwait(false);
   }
 
-  public async ValueTask<JsonPathValueBuffer> CaptureValueAsync(JsonPathFilterDependencies? dependencies = null)
+  public async ValueTask<JsonPathValueBuffer> CaptureValueAsync(
+    JsonPathFilterDependencies? dependencies = null, long? maxBytes = null)
   {
     var start = _tokenStart;
     var isArray = TokenType == JsonTokenType.StartArray;
@@ -216,6 +218,9 @@ internal sealed class JsonPathStreamReader : IDisposable
     var observer = dependencies?.Observe(TokenType, Depth);
     var value = _stream.CanSeek ? null : new JsonPathValueBuffer();
     _captureStart = start;
+    _captureLimit = maxBytes.HasValue && Options.MaxCapturedValueBytes.HasValue
+      ? Math.Min(maxBytes.Value, Options.MaxCapturedValueBytes.Value)
+      : maxBytes ?? Options.MaxCapturedValueBytes;
     try
     {
       CheckCaptureSize(_absoluteConsumed + _pendingConsumed);
@@ -241,6 +246,7 @@ internal sealed class JsonPathStreamReader : IDisposable
     finally
     {
       _captureStart = null;
+      _captureLimit = null;
     }
   }
 
@@ -249,6 +255,14 @@ internal sealed class JsonPathStreamReader : IDisposable
     if (TokenType is not (JsonTokenType.StartArray or JsonTokenType.StartObject))
       return;
     await ConsumeContainerAsync(null, false).ConfigureAwait(false);
+  }
+
+  public async ValueTask CopyValueAsync(Stream destination)
+  {
+    using var output = new JsonPathValueBuffer(destination, leaveOpen: true);
+    await output.AppendAsync(_tokenBytes, _cancellationToken).ConfigureAwait(false);
+    if (TokenType is JsonTokenType.StartArray or JsonTokenType.StartObject)
+      await ConsumeContainerAsync(output, false).ConfigureAwait(false);
   }
 
   private async ValueTask<int> ConsumeContainerAsync(
@@ -316,8 +330,9 @@ internal sealed class JsonPathStreamReader : IDisposable
 
   private void CheckCaptureSize(long end)
   {
-    if (_captureStart is long start && Options.MaxCapturedValueBytes is long limit && end - start > limit)
-      throw new InvalidOperationException($"The captured JSON value exceeds MaxCapturedValueBytes ({limit} bytes).");
+    if (_captureStart is long start && _captureLimit is long limit && end - start > limit)
+      throw new InvalidOperationException(
+        $"The JSON value exceeds the capture/materialization limit ({limit} bytes; MaxCapturedValueBytes or MaxMaterializedValueBytes).");
   }
 
   private void CheckPendingLimits()

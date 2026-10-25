@@ -90,6 +90,97 @@ JsonNode? selected = await stream.ExtractFirstJsonMatchAsync("$.book[title,autho
 Console.WriteLine(selected);
 ```
 
+## Streaming JSON editing and projection write-back
+
+Read a document once and write the modified JSON to a **different** stream:
+
+```csharp
+using JsonPathPlus;
+using System.Text.Json.Nodes;
+
+long edited = await source.EditJsonAsync(destination, "$.items[?(@.id == 42)]", node =>
+{
+    JsonObject item = node!.AsObject();
+    item["name"] = "Updated";
+    item["enabled"] = true;
+    item["tags"]!.AsArray().Add("reviewed");
+    item.Remove("obsolete");
+    return item;
+}, new JsonPathEditingOptions { MaxMaterializedValueBytes = 64 * 1024 });
+```
+
+The callback receives only a selected value, not a DOM for the entire source.
+Use small selectors and `MaxMaterializedValueBytes` to bound callback memory.
+Selecting `$` for a callback explicitly selects and materializes the whole document;
+use direct set/remove/projection operations instead when that is unacceptable.
+Returning `null` writes JSON `null`; it does **not** delete the match.
+
+These operations never materialize the original selected container:
+
+```csharp
+await source.SetJsonValueAsync(destination, "$.items[?(@.id == 42)].name", JsonValue.Create("Updated"));
+await source.RemoveJsonMatchesAsync(destination, "$.items[?(@.disabled == true)]");
+
+// Keep only id/name in each item, but preserve meta and every other nonselected branch.
+await source.ProjectJsonAsync(destination, "$.items[id,name]");
+// Or exclude large payload fields without building objects/arrays in memory.
+await source.ProjectJsonAsync(destination, "$.items[!payload]");
+```
+
+Each example is a separate rewrite: rewind/reopen the source and use a fresh destination.
+The JSONPath addresses existing values; set does not create missing paths.
+Editing accepts property/index/range/union/wildcard/filter/recursive/computed-index
+selectors. Computed extraction results (schema, counts, nested queries, intermediate
+projections) are not writable locations and are rejected before output is written.
+Project paths must end with `[field,...]` or `[!field,...]`.
+
+Matches are changed **once in source order**, using original array indices.
+Duplicate union selectors do not apply the same edit twice. Selecting an ancestor
+suppresses edits to its descendants. Projection preserves source field order;
+selected arrays project direct object items and leave nulls/scalars/nested arrays intact.
+Empty projected objects remain `{}`. Return values count selected source locations,
+not whether the replacement differs from the original.
+
+### Save into the same stream
+
+```csharp
+await using var file = new FileStream("data.json", FileMode.Open, FileAccess.ReadWrite,
+    FileShare.None, 16384, FileOptions.Asynchronous);
+
+await file.SetJsonValueInPlaceAsync("$.items[-1].name", JsonValue.Create("Last item"));
+await file.ProjectJsonInPlaceAsync("$.items[id,name]");
+await file.RemoveJsonMatchesInPlaceAsync("$.obsolete");
+await file.EditJsonInPlaceAsync("$.meta", node =>
+{
+    node!["updated"] = true;
+    return node;
+});
+```
+
+An arbitrary length-changing JSON edit cannot safely overwrite unread source bytes.
+In-place methods first prepare the result in an automatically deleted temporary file,
+then overwrite the original stream and truncate stale trailing bytes. No document DOM
+or document-sized RAM staging buffer is used. The stream must support reading, writing,
+seeking and resizing; a fixed-capacity `MemoryStream` cannot grow.
+
+Preparation errors, malformed input, callback errors and cancellation leave the
+source unchanged. **Final overwrite is not atomic**: a storage/write failure can leave
+partial data. Cancellation is checked before committing and is not observed during
+the final overwrite. For crash-safe file updates, write to a different file and use
+the platform's atomic file-replacement mechanism instead.
+
+All methods leave caller streams open. Seekable source positions are restored.
+In-place writes replace the JSON from the current position through the end, preserving
+any preceding bytes. Separate-output methods append at the destination's current position
+without truncating it; use an empty destination. Input and output must not share underlying
+storage. Separate-output failures may leave partial output.
+
+Unmodified subtrees are copied as encoded JSON; changed ancestor containers may have
+different whitespace/escaping. Memory depends on read/write blocks, the largest JSON
+token, filter operands and any callback/replacement values. Large replay captures use
+the same bounded temporary storage as extraction. Disk I/O, depth and size-limit errors
+propagate to the caller. Configure `JsonPathEditingOptions.ReadOptions` for reader limits.
+
 ## NuGet publishing (GitHub only)
 
 NuGet publishing is automated in GitHub Actions and does not require local package push commands.

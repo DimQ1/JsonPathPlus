@@ -11,9 +11,19 @@ internal sealed class JsonPathValueBuffer : IDisposable
 {
   private const int MemoryThreshold = 32768;
   private Stream _stream;
+  private readonly bool _adaptive;
+  private readonly bool _leaveOpen;
 
-  public JsonPathValueBuffer() => _stream = new MemoryStream();
-  public JsonPathValueBuffer(Stream stream) => _stream = stream;
+  public JsonPathValueBuffer()
+  {
+    _stream = new MemoryStream();
+    _adaptive = true;
+  }
+  public JsonPathValueBuffer(Stream stream, bool leaveOpen = false)
+  {
+    _stream = stream;
+    _leaveOpen = leaveOpen;
+  }
   public Stream Stream => _stream;
   public long Length => _stream.Length;
   public int? ArrayLength { get; set; }
@@ -34,12 +44,9 @@ internal sealed class JsonPathValueBuffer : IDisposable
 
   public async ValueTask AppendAsync(ReadOnlySequence<byte> bytes, CancellationToken cancellationToken)
   {
-    if (_stream is MemoryStream memory && memory.Length + bytes.Length > MemoryThreshold)
+    if (_adaptive && _stream is MemoryStream memory && memory.Length + bytes.Length > MemoryThreshold)
     {
-      var file = new FileStream(
-        Path.Combine(Path.GetTempPath(), "jsonpathplus-" + Guid.NewGuid().ToString("N") + ".tmp"),
-        FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 4096,
-        FileOptions.Asynchronous | FileOptions.DeleteOnClose | FileOptions.SequentialScan);
+      var file = CreateTemporaryStream();
       try
       {
         memory.Position = 0;
@@ -65,7 +72,16 @@ internal sealed class JsonPathValueBuffer : IDisposable
   }
 
   public void Rewind() => _stream.Position = 0;
-  public void Dispose() => _stream.Dispose();
+  public void Dispose()
+  {
+    if (!_leaveOpen)
+      _stream.Dispose();
+  }
+
+  public static FileStream CreateTemporaryStream()
+    => new(Path.Combine(Path.GetTempPath(), "jsonpathplus-" + Guid.NewGuid().ToString("N") + ".tmp"),
+      FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None, 4096,
+      FileOptions.Asynchronous | FileOptions.DeleteOnClose | FileOptions.SequentialScan);
 }
 
 internal sealed class JsonPathReplayStream(Stream inner, long start, long length) : Stream

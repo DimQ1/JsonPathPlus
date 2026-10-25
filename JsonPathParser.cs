@@ -7,7 +7,7 @@ internal static class JsonPathParser
 {
   private const int RecursiveIndexMarker = int.MinValue;
 
-  public static List<JsonPathSegment> Parse(ReadOnlySpan<char> path)
+  public static List<JsonPathSegment> Parse(ReadOnlySpan<char> path, bool strict = false)
   {
     if (path.Length > 0 && path[0] == '$')
       path = path[1..];
@@ -16,18 +16,27 @@ internal static class JsonPathParser
 
     while (path.Length > 0)
     {
+      var count = segments.Count;
       if (TryParseRecursiveSegment(ref path, segments))
+      {
+        if (strict && segments.Count == count)
+          throw new ArgumentException("Unsupported recursive JSONPath selector.", nameof(path));
         continue;
+      }
 
       if (path[0] == '.')
       {
         path = path[1..];
+        if (strict && path.IsEmpty)
+          throw new ArgumentException("A JSONPath property name is required after '.'.", nameof(path));
         continue;
       }
 
       if (path[0] == '[')
       {
         ParseBracketSegment(ref path, segments);
+        if (strict && segments.Count == count)
+          throw new ArgumentException("Unsupported JSONPath bracket selector.", nameof(path));
         continue;
       }
 

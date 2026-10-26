@@ -1,0 +1,19 @@
+JsonPathPlus.csproj
+  s_dbbe2a01c8d326::t_099db6018485d1 11
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.6.18",
+  "base_commit_sha": "e5813bee14c597aa30268f250be0a6c6796f7a35",
+  "prompts": {},
+  "sessions": {
+    "s_dbbe2a01c8d326": {
+      "agent_id": {
+        "tool": "github-copilot-cli",
+        "id": "b19c53e8-0b3b-4990-ac31-b9fa330c4cfb",
+        "model": "unknown"
+      },
+      "human_author": "Dzmitry Shchamialiou <dzmitry.shchamialiou@ventionteams.com>"
+    }
+  }
+}
